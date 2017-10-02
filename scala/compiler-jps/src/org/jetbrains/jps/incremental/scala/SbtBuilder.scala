@@ -4,6 +4,7 @@ import _root_.java.util
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.io.FileUtil
 import org.jetbrains.jps.ModuleChunk
@@ -12,7 +13,7 @@ import org.jetbrains.jps.builders.{BuildRootDescriptor, BuildTarget}
 import org.jetbrains.jps.incremental.ModuleLevelBuilder.ExitCode
 import org.jetbrains.jps.incremental._
 import org.jetbrains.jps.incremental.java.JavaBuilder
-import org.jetbrains.jps.incremental.messages.ProgressMessage
+import org.jetbrains.jps.incremental.messages.{BuildMessage, CompilerMessage, ProgressMessage}
 import org.jetbrains.jps.incremental.scala.InitialScalaBuilder.isScalaProject
 import org.jetbrains.jps.incremental.scala.SbtBuilder._
 import org.jetbrains.jps.incremental.scala.ScalaBuilder._
@@ -29,10 +30,13 @@ import _root_.scala.collection.mutable
  * @author Pavel Fatin
  */
 class SbtBuilder extends ModuleLevelBuilder(BuilderCategory.TRANSLATOR) {
+  private final val LOG: Logger = Logger.getInstance("#org.jetbrains.jps.incremental.scala")
+
   override def getPresentableName = "Scala sbt builder"
 
-  override def buildStarted(context: CompileContext): Unit = {
-    if (isScalaProject(context) && !isDisabled(context)) {
+  override def chunkBuildStarted(context: CompileContext, chunk: ModuleChunk): Unit = {
+    if (isScalaProject(context) && !isDisabled(context) && hasScalaModules(chunk)) {
+      LOG.debug("Java builder is disabled by sbtbuilder") {
       JavaBuilder.IS_ENABLED.set(context, false)
     }
   }
@@ -55,6 +59,11 @@ class SbtBuilder extends ModuleLevelBuilder(BuilderCategory.TRANSLATOR) {
 
     if (isDisabled(context) || ChunkExclusionService.isExcluded(chunk))
       return ExitCode.NOTHING_DONE
+    else if (!hasScalaModules(chunk)) {
+      val message = s"skipping Scala files without a Scala SDK in module(s) ${chunk.getPresentableShortName} in sbtbuilder"
+      context.processMessage(new CompilerMessage("scala", BuildMessage.Kind.WARNING, message))
+      return ExitCode.NOTHING_DONE
+    }
 
     updateSharedResources(context, chunk)
 
