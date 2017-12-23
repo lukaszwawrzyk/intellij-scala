@@ -4,7 +4,7 @@ import java.nio.file.StandardOpenOption._
 import java.nio.file._
 
 import org.jetbrains.jps.ModuleChunk
-import org.jetbrains.jps.incremental.CompileContext
+import org.jetbrains.jps.incremental.{CompileContext, ModuleBuildTarget}
 import org.jetbrains.jps.incremental.scala.SettingsManager
 import org.jetbrains.jps.incremental.scala.data.CompilationData
 
@@ -21,7 +21,7 @@ object CompilerOptionsStore {
     * @return true if compiler options change was detected
     */
   def updateCompilerOptionsCache(context: CompileContext, chunk: ModuleChunk, moduleNames: Seq[String]): Boolean = {
-    val scalacOptsCacheFile = getCacheFileFor(context, moduleNames)
+    val scalacOptsCacheFile = getCacheFileFor(context, chunk.representativeTarget())
     val previousScalacOpts = readCachedOptions(scalacOptsCacheFile)
     val currentOpts = getCurrentOptions(context, chunk)
     val changeDetected = previousScalacOpts.isEmpty || previousScalacOpts.get != currentOpts
@@ -31,9 +31,9 @@ object CompilerOptionsStore {
     changeDetected
   }
 
-  private def getCacheFileFor(context: CompileContext, moduleNames: Seq[String]): Path = {
+  private def getCacheFileFor(context: CompileContext, target: ModuleBuildTarget): Path = {
     val dataPath = context.getProjectDescriptor.dataManager.getDataPaths.getTargetsDataRoot.toPath
-    val scalacOptsDataFile = dataPath.resolve(cacheDir).resolve(moduleNames.head + moduleCacheFileSuffix)
+    val scalacOptsDataFile = dataPath.resolve(cacheDir).resolve(target.getPresentableName + moduleCacheFileSuffix)
     scalacOptsDataFile
   }
 
