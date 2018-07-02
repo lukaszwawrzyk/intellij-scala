@@ -52,7 +52,8 @@ case class Arguments(token: String, sbtData: SbtData, compilerData: CompilerData
       //sbtIncOptions
       filesToPaths(compilationData.zincData.allSources),
       compilationData.zincData.compilationStartDate.toString,
-      compilationData.zincData.isCompile.toString
+      compilationData.zincData.isCompile.toString,
+      sequenceToString(compilationData.zincData.ignoredScalacOptions)
     )
   }
 }
@@ -87,6 +88,7 @@ object Arguments {
     ) :+ PathsToFiles(allSources)
       :+ startDate
       :+ StringToBoolean(isCompile)
+      :+ StringToSequence(ignoredScalacOptions)
      =>
 
       val sourceJars = SbtData.SourceJars(sourceJar_2_10, sourceJar_2_11, sourceJar_2_13)
@@ -109,7 +111,7 @@ object Arguments {
 
       val outputGroups = sourceRoots zip outputDirs
 
-      val zincData = ZincData(allSources, startDate.toLong, isCompile)
+      val zincData = ZincData(allSources, startDate.toLong, isCompile, ignoredScalacOptions)
 
       val compilationData = CompilationData(sources, classpath, output, scalaOptions, javaOptions, CompileOrder.valueOf(order), cacheFile, outputToCacheMap, outputGroups, zincData)
 

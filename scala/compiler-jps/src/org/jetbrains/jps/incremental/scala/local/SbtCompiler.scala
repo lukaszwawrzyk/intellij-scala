@@ -55,6 +55,7 @@ class SbtCompiler(javaTools: JavaTools, optScalac: Option[ScalaCompiler], fileTo
       .withStoreApis(false)
       .withRecompileOnMacroDef(Optional.of(false))
       .withTransitiveStep(5) // Default 3 was not enough for us
+      .withIgnoredScalacOptions(compilationData.zincData.ignoredScalacOptions.toArray)
 
     val cs = incrementalCompiler.compilers(javaTools, scalac)
     val setup = incrementalCompiler.setup(
