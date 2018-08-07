@@ -37,7 +37,7 @@ object CompilationMetadata {
     ServiceLoader.load(classOf[CachedCompilationService])
       .iterator().asScala.toList
 
-  def load(localStore: AnalysisStore, client: Client, compilationData: CompilationData): CompilationMetadata = {
+  def load(localStore: AnalysisStore, client: Client, compilationData: CompilationData, scalaVersion: String): CompilationMetadata = {
     val analysisFromLocalStore = localStore.get()
 
     val cacheLoadingStart = System.currentTimeMillis()
@@ -66,7 +66,7 @@ object CompilationMetadata {
 
     val cachedResults: List[CacheResult] = cacheProviders.map{
       provider =>
-        try provider.loadCache(analysisFromLocalStore.toOption) catch {
+        try provider.loadCache(analysisFromLocalStore.toOption, scalaVersion) catch {
           case NonFatal(e) =>
             loaderErrored(e)
           case e: ClassNotFoundException =>

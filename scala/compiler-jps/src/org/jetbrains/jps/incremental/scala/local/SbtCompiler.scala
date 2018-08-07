@@ -36,7 +36,7 @@ class SbtCompiler(javaTools: JavaTools, optScalac: Option[ScalaCompiler], fileTo
     }
 
     val analysisStore = fileToStore(compilationData.cacheFile)
-    val zincMetadata = CompilationMetadata.load(analysisStore, client, compilationData)
+    val zincMetadata = CompilationMetadata.load(analysisStore, client, compilationData, scalac.scalaInstance().version())
     import zincMetadata._
 
     client.progress("Searching for changed files...")

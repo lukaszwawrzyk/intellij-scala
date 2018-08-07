@@ -51,7 +51,7 @@ case class CacheStats(description: String, loadingDurationMillis: Long, loadingE
   */
 abstract class CachedCompilationProvider {
   /** Called before compilation to obtain compilation metatdata from other source. */
-  def loadCache(current: Option[CachedCompilationService.AnalysisContent]): CacheResult
+  def loadCache(current: Option[CachedCompilationService.AnalysisContent], scalacVersion: String): CacheResult
 
   /** Called when compilation finishes regardless if succesfull or nor  */
   def compilationFinished(compilationResults: Try[CachedCompilationService.CompilationResults],
