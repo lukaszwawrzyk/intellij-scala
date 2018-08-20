@@ -120,6 +120,8 @@ private class ServerConnector(module: Module, filesToCompile: Seq[File], outputD
     override def processed(source: File): Unit = {}
     override def trace(exception: Throwable): Unit = {}
     override def generated(source: File, module: File, name: String): Unit = {}
+    override def startProcessingOutput(output: File): Unit = {}
+    override def stopProcessingOutput(output: File): Unit = {}
   }
 
   @tailrec

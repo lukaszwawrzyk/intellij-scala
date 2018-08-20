@@ -16,7 +16,13 @@ import org.jetbrains.jps.model.module.JpsModule
 
 import scala.collection.JavaConverters._
 
-case class ZincData(allSources: Seq[File], compilationStartDate: Long, isCompile: Boolean, ignoredScalacOptions: Seq[String] = Seq.empty)
+case class ZincData(
+  allSources: Seq[File],
+  compilationStartDate: Long,
+  isCompile: Boolean,
+  ignoredScalacOptions: Seq[String] = Seq.empty,
+  isToJar: Boolean = false
+)
 
 /**
  * @author Pavel Fatin
@@ -170,9 +176,9 @@ abstract class BaseCompilationData extends CompilationDataFactory {
 
       for ((target, output) <- targetToOutput.toMap)
       yield (
-        output.getCanonicalFile,
+        output,
         new File(
-          output.getCanonicalFile,
+          output,
           s"cache-${target.getPresentableName}.zip")
       )
     }

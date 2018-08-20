@@ -28,7 +28,11 @@ trait Client {
 
   def debug(text: String)
 
+  def startProcessingOutput(output: File)
+
   def generated(source: File, module: File, name: String)
+
+  def stopProcessingOutput(output: File)
 
   def processed(source: File)
 

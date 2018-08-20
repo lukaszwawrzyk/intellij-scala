@@ -1,12 +1,23 @@
 package org.jetbrains.jps.incremental.scala.remote
 
 import java.io._
-import java.net.{InetAddress, Socket}
+import java.net.InetSocketAddress
+import java.net.SocketAddress
+import java.net.{ InetAddress, Socket }
+import java.nio.channels.SocketChannel
+import java.util.concurrent.Semaphore
 
 import com.intellij.util.Base64Converter
 import com.martiansoftware.nailgun.NGConstants
 import org.jetbrains.jps.incremental.messages.BuildMessage.Kind
 import org.jetbrains.jps.incremental.scala._
+
+object RemoteResourceOwner {
+  val parallelResourcesLimitPropertyName = "org.jetbrains.jps.parallelResourcesLimit"
+  val defaultParallelResourcesLimit = 20
+  val parallelResourcesLimit = Option(System.getProperty(parallelResourcesLimitPropertyName))
+  val socketSemaphore = new Semaphore(parallelResourcesLimit.fold(defaultParallelResourcesLimit)(_.toInt))
+}
 
 /**
  * @author Pavel Fatin
@@ -15,13 +26,15 @@ import org.jetbrains.jps.incremental.scala._
 trait RemoteResourceOwner {
   protected val address: InetAddress
   protected val port: Int
-  
+
   protected val currentDirectory = System.getProperty("user.dir")
   protected val serverAlias = "compile-server"
 
   def send(command: String, arguments: Seq[String], client: Client) {
     val encodedArgs = arguments.map(s => Base64Converter.encode(s.getBytes("UTF-8")))
-    using(new Socket(address, port)) { socket =>
+    val channel = SocketChannel.open(new InetSocketAddress(address, port))
+    RemoteResourceOwner.socketSemaphore.acquire(1)
+    try using(channel.socket()) { socket =>
       using(new DataOutputStream(new BufferedOutputStream(socket.getOutputStream))) { output =>
         createChunks(command, encodedArgs).foreach(_.writeTo(output))
         output.flush()
@@ -31,7 +44,7 @@ trait RemoteResourceOwner {
           }
         }
       }
-    }
+    } finally RemoteResourceOwner.socketSemaphore.release(1)
   }
 
   protected def handle(input: DataInputStream, client: Client) {

@@ -38,6 +38,10 @@ class EventGeneratingClient(writeEvent: Event => Unit, canceled: => Boolean) ext
     listener(GeneratedEvent(source, module, name))
   }
 
+  override def startProcessingOutput(output: File): Unit = listener(StartProcessingOutputEvent(output))
+
+  override def stopProcessingOutput(output: File): Unit = listener(StopProcessingOutputEvent(output))
+
   def deleted(module: File) {
     listener(DeletedEvent(module))
   }

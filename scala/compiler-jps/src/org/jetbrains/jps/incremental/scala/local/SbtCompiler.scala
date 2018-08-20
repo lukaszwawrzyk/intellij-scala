@@ -3,6 +3,7 @@ package local
 
 import java.io.File
 import java.util.Optional
+import java.util.jar.JarFile
 
 import scala.util.Try
 
@@ -24,7 +25,6 @@ class SbtCompiler(javaTools: JavaTools, optScalac: Option[ScalaCompiler], fileTo
   }
 
   private def doCompile(compilationData: CompilationData, client: Client, scalac: ScalaCompiler): Unit = {
-    val startTime = System.currentTimeMillis()
     client.progress("Loading cached results...")
 
     val incrementalCompiler = new IncrementalCompilerImpl
@@ -68,10 +68,15 @@ class SbtCompiler(javaTools: JavaTools, optScalac: Option[ScalaCompiler], fileTo
       Option(progress),
       Array.empty)
     val previousResult = PreviousResult.create(Optional.of(previousAnalysis), previousSetup.toOptional)
+
+    val finalOutput = if (compilationData.zincData.isToJar) {
+      new File(compilationData.output.getParentFile, compilationData.output.getName + ".jar")
+    } else compilationData.output
+
     val inputs = incrementalCompiler.inputs(
       compilationData.classpath.toArray,
       compilationData.zincData.allSources.toArray,
-      compilationData.output,
+      finalOutput,
       compilationData.scalaOptions.toArray,
       compilationData.javaOptions.toArray,
       100,
@@ -92,15 +97,26 @@ class SbtCompiler(javaTools: JavaTools, optScalac: Option[ScalaCompiler], fileTo
 
         val binaryToSource = BinaryToSource(result.analysis, compilationData)
 
-        def processGeneratedFile(classFile: File): Unit = {
-          for (source <- binaryToSource.classfileToSources(classFile))
-            client.generated(source, classFile, binaryToSource.className(classFile))
-        }
+        client.startProcessingOutput(finalOutput)
 
-        intellijClassfileManager.generatedDuringCompilation().flatten.foreach(processGeneratedFile)
+        val importedBinaries = if (cacheDetails.isCached) previousAnalysis.asInstanceOf[Analysis].stamps.allProducts else Nil
+        val generatedClassFiles = intellijClassfileManager.generatedDuringCompilation().flatten
+        val allClassFiles = importedBinaries ++ generatedClassFiles
 
-        if (cacheDetails.isCached)
-          previousAnalysis.asInstanceOf[Analysis].stamps.allProducts.foreach(processGeneratedFile)
+        def sourceForBinary(binary: File): Option[File] =
+          binaryToSource.classfileToSources(binary).headOption
+
+        def addClassNames(classFiles: Iterable[File]): Seq[(File, String)] =
+          classFiles.map(cf => (cf, binaryToSource.className(cf))).toVector
+
+        val allGenerated = allClassFiles
+          .groupBy(sourceForBinary)
+          .collect { case (Some(source), classFiles) => source -> addClassNames(classFiles) }
+          .toVector
+
+        client.allGenerated(allGenerated)
+
+        client.stopProcessingOutput(finalOutput)
       }
       result
     }

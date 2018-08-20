@@ -49,11 +49,14 @@ case class Arguments(token: String, sbtData: SbtData, compilerData: CompilerData
       filesToPaths(sourceRoots),
       filesToPaths(outputDirs), 
       sequenceToString(worksheetFiles),
-      //sbtIncOptions
       filesToPaths(compilationData.zincData.allSources),
       compilationData.zincData.compilationStartDate.toString,
       compilationData.zincData.isCompile.toString,
-      sequenceToString(compilationData.zincData.ignoredScalacOptions)
+      sequenceToString(compilationData.zincData.ignoredScalacOptions),
+      compilationData.zincData.isToJar.toString
+      // If you are adding something here (or removing), make sure it is aligned
+      // with org.jetbrains.plugins.scala.compiler.RemoteServerConnectorBase.arguments
+      // or you will break expression evaluator.
     )
   }
 }
@@ -89,6 +92,7 @@ object Arguments {
       :+ startDate
       :+ StringToBoolean(isCompile)
       :+ StringToSequence(ignoredScalacOptions)
+      :+ StringToBoolean(toJar)
      =>
 
       val sourceJars = SbtData.SourceJars(sourceJar_2_10, sourceJar_2_11, sourceJar_2_13)
@@ -111,7 +115,7 @@ object Arguments {
 
       val outputGroups = sourceRoots zip outputDirs
 
-      val zincData = ZincData(allSources, startDate.toLong, isCompile, ignoredScalacOptions)
+      val zincData = ZincData(allSources, startDate.toLong, isCompile, ignoredScalacOptions, toJar)
 
       val compilationData = CompilationData(sources, classpath, output, scalaOptions, javaOptions, CompileOrder.valueOf(order), cacheFile, outputToCacheMap, outputGroups, zincData)
 

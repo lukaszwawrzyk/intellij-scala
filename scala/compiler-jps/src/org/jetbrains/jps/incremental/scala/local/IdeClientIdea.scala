@@ -32,6 +32,9 @@ class IdeClientIdea(compilerName: String,
   private val tempSuccessfullyCompiled = mutable.Set[File]()
   private val packageObjectsBaseClasses = ArrayBuffer[PackageObjectBaseClass]()
 
+  override def startProcessingOutput(output: File): Unit = {}
+  override def stopProcessingOutput(output: File): Unit = {}
+
   //logic is taken from org.jetbrains.jps.incremental.java.OutputFilesSink.save
   def generated(source: File, outputFile: File, name: String): Unit = {
     val compiledClass = new LazyCompiledClass(outputFile, source, name)
