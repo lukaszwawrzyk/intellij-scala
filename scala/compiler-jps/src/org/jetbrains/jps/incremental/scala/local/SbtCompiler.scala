@@ -52,7 +52,7 @@ class SbtCompiler(javaTools: JavaTools, optScalac: Option[ScalaCompiler], fileTo
 
     val incOptions = IncOptions.of()
       .withExternalHooks(IntelljExternalHooks(intellijLookup, intellijClassfileManager))
-      .withStoreApis(false)
+      .withStoreApis(true)
       .withRecompileOnMacroDef(Optional.of(false))
       .withTransitiveStep(5) // Default 3 was not enough for us
       .withIgnoredScalacOptions(compilationData.zincData.ignoredScalacOptions.toArray)
@@ -84,7 +84,8 @@ class SbtCompiler(javaTools: JavaTools, optScalac: Option[ScalaCompiler], fileTo
       order,
       cs,
       setup,
-      previousResult)
+      previousResult,
+      Optional.empty())
 
     val compilationResult = Try {
       client.progress("Collecting incremental compiler data...")
