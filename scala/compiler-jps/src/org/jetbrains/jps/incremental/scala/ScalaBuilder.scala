@@ -9,10 +9,11 @@ import com.intellij.openapi.diagnostic.{Logger => JpsLogger}
 import org.jetbrains.jps.ModuleChunk
 import org.jetbrains.jps.builders.java.JavaBuilderUtil
 import org.jetbrains.jps.incremental._
-import org.jetbrains.jps.incremental.messages.ProgressMessage
 import org.jetbrains.jps.incremental.scala.data.{CompilationData, CompilerData, SbtData}
 import org.jetbrains.jps.incremental.scala.data.DataFactoryService
 import org.jetbrains.jps.incremental.scala.data.DefaultDataFactoryService
+import org.jetbrains.jps.incremental.messages.{BuildMessage, CompilerMessage, ProgressMessage}
+import org.jetbrains.jps.incremental.scala.data.CompilerConfiguration
 import org.jetbrains.jps.incremental.scala.local.LocalServer
 import org.jetbrains.jps.incremental.scala.model.{GlobalSettings, ProjectSettings}
 import org.jetbrains.jps.incremental.scala.remote.RemoteServer
@@ -29,6 +30,7 @@ object ScalaBuilder {
 
   def compile(context: CompileContext,
               chunk: ModuleChunk,
+              compilerConfig: CompilerConfiguration,
               sources: Seq[File],
               allSources: Seq[File],
               modules: Set[JpsModule],
@@ -39,16 +41,19 @@ object ScalaBuilder {
     for {
       sbtData <-  sbtData
       dataFactory = dataFactoryOf(context)
-      compilerData <- dataFactory.getCompilerDataFactory.from(context, chunk)
-      compilationData <- dataFactory.getCompilationDataFactory.from(sources, allSources, context,  chunk)
+      compilationData <- dataFactory.getCompilationDataFactory.from(sources, allSources, context, chunk, compilerConfig)
     }
     yield {
       scalaLibraryWarning(modules, compilationData, client)
 
       val server = getServer(context)
-      server.compile(sbtData, compilerData, compilationData, client)
+      server.compile(sbtData, compilerConfig.data, compilationData, client)
     }
   }
+
+  // Invokation of these methods can take a long time on large projects (like IDEA's one)
+  def isScalaProject(project: JpsProject): Boolean = project.getModules.asScala.exists(SettingsManager.hasScalaSdk)
+  def hasScalaModules(chunk: ModuleChunk): Boolean = SettingsManager.hasScalaSdk(chunk.representativeTarget().getModule)
 
   private def dataFactoryOf(context: CompileContext): DataFactoryService = {
     val df = ServiceLoader.load(classOf[DataFactoryService])
@@ -95,12 +100,11 @@ object ScalaBuilder {
   }
 
   private def scalaLibraryWarning(modules: Set[JpsModule], compilationData: CompilationData, client: Client) {
-    val hasScalaFacet = modules.exists(SettingsManager.hasScalaSdk)
     val hasScalaLibrary = compilationData.classpath.exists(_.getName.startsWith("scala-library"))
 
     val hasScalaSources = compilationData.sources.exists(_.getName.endsWith(".scala"))
 
-    if (hasScalaFacet && !hasScalaLibrary && hasScalaSources) {
+    if (!hasScalaLibrary && hasScalaSources) {
       val names = modules.map(_.getName).mkString(", ")
       client.warning("No 'scala-library*.jar' in module dependencies [%s]".format(names))
     }

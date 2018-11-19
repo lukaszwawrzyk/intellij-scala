@@ -26,7 +26,7 @@ object CompilerData extends CompilerDataFactory {
     val target = chunk.representativeTarget
     val module = target.getModule
 
-    val compilerJars = if (SettingsManager.hasScalaSdk(module)) {
+    val compilerJars =
       compilerJarsIn(module).flatMap { case jars: CompilerJars =>
         val absentJars = jars.files.filter(!_.exists)
         Either.cond(absentJars.isEmpty,
@@ -34,9 +34,6 @@ object CompilerData extends CompilerDataFactory {
           "Scala compiler JARs not found (module '" + chunk.representativeTarget().getModule.getName + "'): "
                   + absentJars.map(_.getPath).mkString(", "))
       }
-    } else {
-      Right(None)
-    }
 
     compilerJars.flatMap { jars =>
       val incrementalityType = SettingsManager.getProjectSettings(project.getProject).getIncrementalityType

@@ -48,6 +48,9 @@ case class TraceEvent(message: String, lines: Array[String]) extends Event
 @SerialVersionUID(-3155152113364817122L)
 case class GeneratedEvent(source: File, module: File, name: String) extends Event
 
+@SerialVersionUID(-3155152456364817122L)
+case class AllGeneratedEvent(generated: Seq[(File, Seq[(File, String)])]) extends Event
+
 @SerialVersionUID(-31551522345817122L)
 case class StartProcessingOutputEvent(output: File) extends Event
 

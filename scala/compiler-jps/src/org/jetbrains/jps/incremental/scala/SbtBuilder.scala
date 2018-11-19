@@ -17,6 +17,7 @@ import org.jetbrains.jps.incremental.messages.{BuildMessage, CompilerMessage, Pr
 import org.jetbrains.jps.incremental.scala.InitialScalaBuilder.isScalaProject
 import org.jetbrains.jps.incremental.scala.SbtBuilder._
 import org.jetbrains.jps.incremental.scala.ScalaBuilder._
+import org.jetbrains.jps.incremental.scala.data.CompilerConfiguration
 import org.jetbrains.jps.incremental.scala.local.IdeClientSbt
 import org.jetbrains.jps.incremental.scala.model.IncrementalityType
 import org.jetbrains.jps.incremental.scala.sbtzinc.{CompilerOptionsStore, ModulesFedToZincStore}
@@ -31,6 +32,7 @@ import _root_.scala.collection.mutable
  */
 class SbtBuilder extends ModuleLevelBuilder(BuilderCategory.TRANSLATOR) {
   private final val LOG: Logger = Logger.getInstance("#org.jetbrains.jps.incremental.scala")
+  val shouldSkipCompilation: Key[Boolean] = Key.create("_java_compiler_enabled_")
 
   override def getPresentableName = "Scala sbt builder"
 
@@ -38,13 +40,22 @@ class SbtBuilder extends ModuleLevelBuilder(BuilderCategory.TRANSLATOR) {
     if (isScalaProject(context) && !isDisabled(context) && hasScalaModules(chunk)) {
       LOG.debug("Java builder is disabled by sbtbuilder") {
       JavaBuilder.IS_ENABLED.set(context, false)
-    }
+      shouldSkipCompilation.set(context, false)
+    } else shouldSkipCompilation.set(context, true)
   }
 
   override def build(context: CompileContext,
                      chunk: ModuleChunk,
                      dirtyFilesHolder: DirtyFilesHolder,
                      outputConsumer: ModuleLevelBuilder.OutputConsumer): ModuleLevelBuilder.ExitCode = {
+
+      if (isDisabled(context) || ChunkExclusionService.isExcluded(chunk))
+      return ExitCode.NOTHING_DONE
+    else if (shouldSkipCompilation.get(context)) {
+      val message = s"skipping Scala files without a Scala SDK in module(s) ${chunk.getPresentableShortName} in sbtbuilder"
+      context.processMessage(new CompilerMessage("scala", BuildMessage.Kind.WARNING, message))
+      return ExitCode.NOTHING_DONE
+    }
 
     val modules = chunk.getModules.asScala.toSet
 
@@ -57,14 +68,6 @@ class SbtBuilder extends ModuleLevelBuilder(BuilderCategory.TRANSLATOR) {
       }
     }
 
-    if (isDisabled(context) || ChunkExclusionService.isExcluded(chunk))
-      return ExitCode.NOTHING_DONE
-    else if (!hasScalaModules(chunk)) {
-      val message = s"skipping Scala files without a Scala SDK in module(s) ${chunk.getPresentableShortName} in sbtbuilder"
-      context.processMessage(new CompilerMessage("scala", BuildMessage.Kind.WARNING, message))
-      return ExitCode.NOTHING_DONE
-    }
-
     updateSharedResources(context, chunk)
 
     context.processMessage(new ProgressMessage("Searching for compilable files..."))
@@ -74,41 +77,44 @@ class SbtBuilder extends ModuleLevelBuilder(BuilderCategory.TRANSLATOR) {
 
     val moduleNames = modules.map(_.getName).toSeq
 
-    val compilerOptionsChanged = CompilerOptionsStore.updateCompilerOptionsCache(context, chunk, moduleNames)
 
-    if (dirtyFilesFromIntellij.isEmpty &&
-      !dirtyFilesHolder.hasRemovedFiles &&
-      !ModulesFedToZincStore.checkIfAnyModuleDependencyWasFedToZinc(context, chunk) &&
-      !compilerOptionsChanged
-    ) {
-      return ExitCode.NOTHING_DONE
-    }
+    CompilerConfiguration.withConfig(context, chunk) { compilerConfig =>
+      val compilerOptionsChanged =
+        CompilerOptionsStore.updateCompilerOptionsCache(context, chunk, moduleNames, compilerConfig)
 
+      if (dirtyFilesFromIntellij.isEmpty &&
+        !dirtyFilesHolder.hasRemovedFiles &&
+        !ModulesFedToZincStore.checkIfAnyModuleDependencyWasFedToZinc(context, chunk) &&
+        !compilerOptionsChanged
+      ) {
+        return ExitCode.NOTHING_DONE
+      }
 
-    val sourceToBuildTarget = collectCompilableFiles(context, chunk)
-    if (sourceToBuildTarget.isEmpty)
-      return ExitCode.NOTHING_DONE
+      val sourceToBuildTarget = collectCompilableFiles(context, chunk)
+      if (sourceToBuildTarget.isEmpty)
+        return ExitCode.NOTHING_DONE
 
-    val allSources = sourceToBuildTarget.keySet.toSeq
+      val allSources = sourceToBuildTarget.keySet.toSeq
 
-    val client = new IdeClientSbt("scala", context, moduleNames, outputConsumer, sourceToBuildTarget.get)
+      val client = new IdeClientSbt("scala", context, moduleNames, outputConsumer, sourceToBuildTarget.get)
 
-    logCustomSbtIncOptions(context, chunk, client)
+      logCustomSbtIncOptions(context, chunk, client)
 
-    // assume Zinc will be used after we reach this point
-    ModulesFedToZincStore.add(context, moduleNames)
+      // assume Zinc will be used after we reach this point
+      ModulesFedToZincStore.add(context, moduleNames)
 
-    compile(context, chunk, dirtyFilesFromIntellij, allSources, modules, client) match {
-      case Left(error) =>
-        client.error(error)
-        ExitCode.ABORT
-      case Right(code) =>
-        if (client.hasReportedErrors || client.isCanceled) {
+      compile(context, chunk, compilerConfig, dirtyFilesFromIntellij, allSources, modules, client) match {
+        case Left(error) =>
+          client.error(error)
           ExitCode.ABORT
-        } else {
-          client.progress("Compilation completed", Some(1.0F))
-          code
-        }
+        case Right(code) =>
+          if (client.hasReportedErrors || client.isCanceled) {
+            ExitCode.ABORT
+          } else {
+            client.progress("Compilation completed", Some(1.0F))
+            code
+          }
+      }
     }
   }
 

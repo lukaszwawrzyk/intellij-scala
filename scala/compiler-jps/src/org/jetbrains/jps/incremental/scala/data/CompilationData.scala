@@ -48,7 +48,11 @@ object CompilationData extends BaseCompilationData {
 abstract class BaseCompilationData extends CompilationDataFactory {
   private val compilationStamp = System.nanoTime()
 
-  override def from(sources: Seq[File], allSources: Seq[File], context: CompileContext, chunk: ModuleChunk): Either[String, CompilationData] = {
+  override def from(sources: Seq[File],
+           allSources: Seq[File],
+           context: CompileContext,
+           chunk: ModuleChunk,
+           compilerConfiguration: CompilerConfiguration): Either[String, CompilationData] = {
     val target = chunk.representativeTarget
     val module = target.getModule
 
@@ -60,9 +64,6 @@ abstract class BaseCompilationData extends CompilationDataFactory {
     checkOrCreate(output)
 
     val classpath = ProjectPaths.getCompilationClasspathFiles(chunk, chunk.containsTests, false, true).asScala.toSeq
-    val compilerSettings = SettingsManager.getProjectSettings(module.getProject).getCompilerSettings(chunk)
-    val scalaOptions = scalaOptionsFor(compilerSettings, chunk)
-    val order = compilerSettings.getCompileOrder
 
     createOutputToCacheMap(context).map { outputToCacheMap =>
 
@@ -77,13 +78,6 @@ abstract class BaseCompilationData extends CompilationDataFactory {
 
       val relevantOutputToCacheMap = (outputToCacheMap - output).filter(p => classpath.contains(p._1))
 
-      val commonOptions = {
-        val encoding = context.getProjectDescriptor.getEncodingConfiguration.getPreferredModuleChunkEncoding(chunk)
-        Option(encoding).map(Seq("-encoding", _)).getOrElse(Seq.empty)
-      }
-
-      val javaOptions = javaOptionsFor(context, chunk)
-
       val outputGroups = createOutputGroups(chunk)
 
       val canonicalSources = sources.map(_.getCanonicalFile)
@@ -95,9 +89,9 @@ abstract class BaseCompilationData extends CompilationDataFactory {
       val additionalOptions = extraOptions(target, context, module, outputGroups)
 
       val zincData = ZincDataService.transform(ZincData(allSources, compilationStamp, isCompile))
-
-      CompilationData(canonicalSources, classpath, output, commonOptions ++ scalaOptions ++ additionalOptions, commonOptions ++ javaOptions,
-        order, cacheFile, relevantOutputToCacheMap, outputGroups, zincData)
+      CompilationData(canonicalSources, classpath, output,
+        compilerConfiguration.scalacOps ++ additionalOptions, compilerConfiguration.javacOpts,
+        compilerConfiguration.order, cacheFile, relevantOutputToCacheMap, outputGroups, zincData)
     }
   }
 

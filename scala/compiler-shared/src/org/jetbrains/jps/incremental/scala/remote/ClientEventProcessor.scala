@@ -24,6 +24,9 @@ class ClientEventProcessor(client: Client) {
       case GeneratedEvent(source, module, name) =>
         client.generated(source, module, name)
 
+      case AllGeneratedEvent(generated) =>
+        client.allGenerated(generated)
+
       case StartProcessingOutputEvent(output) =>
         client.startProcessingOutput(output)
 

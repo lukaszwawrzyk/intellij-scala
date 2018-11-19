@@ -21,6 +21,10 @@ import org.jetbrains.jps.incremental.{BuilderCategory, _}
 import _root_.scala.collection.JavaConverters._
 import _root_.scala.collection.mutable
 import _root_.scala.collection.mutable.ListBuffer
+import scala.collection.mutable
+import scala.collection.mutable.ListBuffer
+import org.jetbrains.jps.incremental._
+import org.jetbrains.jps.incremental.scala.data.CompilerConfiguration
 
 /**
   * Nikolay.Tropin
@@ -86,18 +90,20 @@ class IdeaIncrementalBuilder(category: BuilderCategory) extends ModuleLevelBuild
 
     val scalaSources = sources.filter(_.getName.endsWith(".scala")).asJava
 
-    compile(context, chunk, sources, Seq.empty, modules, client) match {
-      case Left(error) =>
-        client.error(error)
-        ExitCode.ABORT
-      case _ if client.hasReportedErrors || client.isCanceled => ExitCode.ABORT
-      case Right(code) =>
-        if (delta != null && JavaBuilderUtil.updateMappings(context, delta, dirtyFilesHolder, chunk, scalaSources, successfullyCompiled.asJava))
-          ExitCode.ADDITIONAL_PASS_REQUIRED
-        else {
-          client.progress("Compilation completed", Some(1.0F))
-          code
-        }
+    CompilerConfiguration.withConfig(context, chunk) { compilerConfig =>
+      compile(context, chunk, compilerConfig, sources, Seq.empty, modules, client) match {
+        case Left(error) =>
+          client.error(error)
+          ExitCode.ABORT
+        case _ if client.hasReportedErrors || client.isCanceled => ExitCode.ABORT
+        case Right(code) =>
+          if (delta != null && JavaBuilderUtil.updateMappings(context, delta, dirtyFilesHolder, chunk, scalaSources, successfullyCompiled.asJava))
+            ExitCode.ADDITIONAL_PASS_REQUIRED
+          else {
+            client.progress("Compilation completed", Some(1.0F))
+            code
+          }
+      }
     }
   }
 
