@@ -10,6 +10,7 @@ import com.intellij.notification.{Notification, NotificationType, Notifications}
 import com.intellij.openapi.compiler.{CompilerMessageCategory, CompilerPaths}
 import com.intellij.openapi.progress.{ProgressIndicator, ProgressManager}
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.module.Module
 import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.{PsiFile, PsiManager}
@@ -36,14 +37,14 @@ import org.jetbrains.plugins.scala.worksheet.ui.{WorksheetEditorPrinter, Workshe
 class RemoteServerConnector(psiFile: PsiFile, worksheet: File, output: File, worksheetClassName: String,
                             replArgs: Option[ReplModeArgs], needsCheck: Boolean) extends RemoteServerConnectorBase(
   WorksheetCommonSettings.getInstance(psiFile).getModuleFor, Seq(worksheet), output, needsCheck) {
-  
+
   val runType: WorksheetMakeType = WorksheetProjectSettings.getMakeType(module.getProject)
 
   override protected def compilerSettings: ScalaCompilerSettings = WorksheetCommonSettings.getInstance(psiFile).getCompilerProfile.getSettings
 
   /**
     * Args (for running in compile server process only)
-    * 0. Compiled class name to execute 
+    * 0. Compiled class name to execute
     * 1. Path to runners.jar (needed to load MacroPrinter for types)
     * 2. Output - path to temp file, where processed worksheet code is written
     * 3. Output dir for compiled worksheet (i.e. for compiled temp file with processed code)
@@ -67,15 +68,9 @@ class RemoteServerConnector(psiFile: PsiFile, worksheet: File, output: File, wor
     try {
       val worksheetProcess = runType match {
         case InProcessServer | OutOfProcessServer =>
-           new RemoteServerRunner(project).buildProcess(arguments, client)
+          new RemoteServerRunner(project).buildProcess(arguments, client)
         case NonServer =>
           val eventClient = new ClientEventProcessor(client)
-          
-          val encodedArgs = ("NO_TOKEN" +: arguments) map {
-            case "" => Base64Converter.encode("#STUB#" getBytes "UTF-8")
-            case s => Base64Converter.encode(s getBytes "UTF-8")
-          }
-
           val errorHandler = new ErrorHandler {
             override def error(message: String): Unit = Notifications.Bus notify {
               new Notification(
@@ -86,13 +81,13 @@ class RemoteServerConnector(psiFile: PsiFile, worksheet: File, output: File, wor
               )
             }
           }
-
+          val encodedArgs = Seq(Protocol.fromBytes(Protocol.serializeArgs("NO_TOKEN" +: arguments)))
           new NonServerRunner(project, Some(errorHandler)).buildProcess(encodedArgs, (text: String) => {
-            val event = Event.fromBytes(Base64Converter.decode(text.getBytes("UTF-8")))
+            val event = Protocol.deserializeEvent(Protocol.toBytes(text))
             eventClient.process(event)
           })
       }
-      
+
       if (worksheetProcess == null) return ExitCode.ABORT
 
       val fileToReHighlight = extensions.inReadAction(PsiManager getInstance project findFile originalFile) match {
@@ -103,18 +98,18 @@ class RemoteServerConnector(psiFile: PsiFile, worksheet: File, output: File, wor
       worksheetHook.disableRun(originalFile, Some(worksheetProcess))
       worksheetProcess.addTerminationCallback({
         worksheetHook.enableRun(originalFile, client.isCompiledWithErrors)
-        fileToReHighlight foreach  WorksheetIncrementalEditorPrinter.rehighlight
+        fileToReHighlight foreach WorksheetIncrementalEditorPrinter.rehighlight
       })
 
       WorksheetProcessManager.add(originalFile, worksheetProcess)
 
       worksheetProcess.run()
-      
+
       ExitCode.OK
     } catch {
       case _: SocketException =>
         ExitCode.OK // someone has stopped the server
-    } 
+    }
   }
 
   private def outputDirs = (ModuleRootManager.getInstance(module).getDependencies :+ module).map(
@@ -124,11 +119,11 @@ class RemoteServerConnector(psiFile: PsiFile, worksheet: File, output: File, wor
 object RemoteServerConnector {
   class MyTranslatingClient(callback: Runnable, project: Project, worksheet: VirtualFile, consumer: OuterCompilerInterface) extends DummyClient {
     private val length = WorksheetSourceProcessor.END_GENERATED_MARKER.length
-    
+
     private var hasErrors = false
 
     def isCompiledWithErrors: Boolean = hasErrors
-    
+
     override def progress(text: String, done: Option[Float]) {
       consumer.progress(text, done)
     }
@@ -145,10 +140,10 @@ object RemoteServerConnector {
         val i = lines(linesLength - 2) indexOf WorksheetSourceProcessor.END_GENERATED_MARKER
         if (i > -1) i + length else 0
       } else 0
-      
+
       val finalText = if (differ == 0) text else {
         val buffer = new StringBuilder
-        
+
         for (j <- 0 until (linesLength - 2)) buffer append lines(j) append "\n"
 
         val lines1 = lines(linesLength - 1)
@@ -157,7 +152,7 @@ object RemoteServerConnector {
           if (lines1.length > differ) lines1.substring(differ) else lines1) append "\n"
         buffer.toString()
       }
-      
+
       val line1 = line.map(i => i - 4).map(_.toInt)
       val column1 = column.map(_ + 1 - differ).map(_.toInt)
 
@@ -174,7 +169,7 @@ object RemoteServerConnector {
         case WARNING =>
           CompilerMessageCategory.WARNING
       }
-      
+
       consumer.message(
         new CompilerMessageImpl(project, category, finalText, worksheet, line1 getOrElse -1, column1 getOrElse -1, null)
       )
@@ -188,21 +183,21 @@ object RemoteServerConnector {
       consumer.worksheetOutput(text)
     }
   }
-  
+
   trait OuterCompilerInterface {
     def message(message: CompilerMessageImpl)
     def progress(text: String, done: Option[Float])
-    
+
     def worksheetOutput(text: String)
     def trace(thr: Throwable)
   }
-  
+
   class CompilerInterfaceImpl(task: CompilerTask, worksheetPrinter: Option[WorksheetEditorPrinter],
                               indicator: Option[ProgressIndicator], auto: Boolean = false) extends OuterCompilerInterface {
     override def progress(text: String, done: Option[Float]) {
       if (auto) return
       val taskIndicator = ProgressManager.getInstance().getProgressIndicator
-      
+
       if (taskIndicator != null) {
         taskIndicator setText text
         done foreach (d => taskIndicator.setFraction(d.toDouble))

@@ -80,6 +80,7 @@ abstract class BaseCompilationData extends CompilationDataFactory {
 
       val outputGroups = createOutputGroups(chunk)
 
+      // Takes some time
       val canonicalSources = sources.map(_.getCanonicalFile)
 
       val isCompile =
