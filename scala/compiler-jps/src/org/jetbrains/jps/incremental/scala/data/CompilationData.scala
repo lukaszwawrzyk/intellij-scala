@@ -80,9 +80,6 @@ abstract class BaseCompilationData extends CompilationDataFactory {
 
       val outputGroups = createOutputGroups(chunk)
 
-      // Takes some time
-      val canonicalSources = sources.map(_.getCanonicalFile)
-
       val isCompile =
         !JavaBuilderUtil.isCompileJavaIncrementally(context) &&
           !JavaBuilderUtil.isForcedRecompilationAllJavaModules(context)
@@ -90,7 +87,7 @@ abstract class BaseCompilationData extends CompilationDataFactory {
       val additionalOptions = extraOptions(target, context, module, outputGroups)
 
       val zincData = ZincDataService.transform(ZincData(allSources, compilationStamp, isCompile))
-      CompilationData(canonicalSources, classpath, output,
+      CompilationData(sources, classpath, output,
         compilerConfiguration.scalacOps ++ additionalOptions, compilerConfiguration.javacOpts,
         compilerConfiguration.order, cacheFile, relevantOutputToCacheMap, outputGroups, zincData)
     }
