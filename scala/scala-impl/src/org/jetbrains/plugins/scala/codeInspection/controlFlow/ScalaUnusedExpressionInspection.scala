@@ -94,7 +94,7 @@ object ScalaUnusedExpressionInspection {
 
     expression.parentsInFile.takeWhile {
       case statement: ScMatchStmt => isNotAncestor(statement.expr)
-      case statement: ScIfStmt => isNotAncestor(statement.condition)
+      case statement: ScIf => isNotAncestor(statement.condition)
       case _: ScBlock |
            _: ScParenthesisedExpr |
            _: ScCaseClause |
