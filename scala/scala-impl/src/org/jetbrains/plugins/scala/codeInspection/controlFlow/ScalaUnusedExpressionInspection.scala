@@ -93,7 +93,7 @@ object ScalaUnusedExpressionInspection {
       maybeExpression.forall(!PsiTreeUtil.isAncestor(_, expression, false))
 
     expression.parentsInFile.takeWhile {
-      case statement: ScMatchStmt => isNotAncestor(statement.expr)
+      case statement: ScMatch => isNotAncestor(statement.expr)
       case statement: ScIf => isNotAncestor(statement.condition)
       case _: ScBlock |
            _: ScParenthesisedExpr |
