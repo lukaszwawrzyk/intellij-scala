@@ -30,6 +30,7 @@ import org.jetbrains.plugins.scala.lang.psi.api.toplevel.typedef._
 import org.jetbrains.plugins.scala.lang.psi.api.toplevel.{ScEarlyDefinitions, ScModifierListOwner, ScNamedElement, ScTypedDefinition}
 import org.jetbrains.plugins.scala.lang.psi.api.{ImplicitArgumentsOwner, ScPackage}
 import org.jetbrains.plugins.scala.lang.psi.impl.ScalaPsiElementFactory._
+import org.jetbrains.plugins.scala.lang.psi.impl.source.ScalaCodeFragment
 import org.jetbrains.plugins.scala.lang.psi.impl.toplevel.synthetic.ScSyntheticFunction
 import org.jetbrains.plugins.scala.lang.psi.types._
 import org.jetbrains.plugins.scala.lang.psi.types.api._
@@ -841,7 +842,7 @@ private[evaluation] trait ScalaEvaluatorBuilderUtil {
             try evaluatorFor(expr)
             catch {
               case _: NeedCompilationException =>
-                val fragment = new ScalaCodeFragment(caseCl.getProject, expr.getText)
+                val fragment = ScalaCodeFragment(expr.getText)(caseCl.getProject)
                 new ScalaCompilingEvaluator(expr, fragment)
             }
 
