@@ -99,7 +99,7 @@ object ScalaUnusedExpressionInspection {
            _: ScParenthesisedExpr |
            _: ScCaseClause |
            _: ScCaseClauses |
-           _: ScTryStmt |
+           _: ScTry |
            _: ScCatchBlock => true
       case _ => false
     }
