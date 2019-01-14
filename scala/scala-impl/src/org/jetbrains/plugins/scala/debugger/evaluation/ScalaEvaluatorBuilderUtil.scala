@@ -1109,7 +1109,7 @@ private[evaluation] trait ScalaEvaluatorBuilderUtil {
       case None =>
         throw EvaluationException(ScalaBundle.message("do.statement.without.condition"))
     }
-    val iterationEvaluator = doSt.getExprBody match {
+    val iterationEvaluator = doSt.body match {
       case Some(body) => evaluatorFor(body)
       case None =>
         throw EvaluationException(ScalaBundle.message("do.statement.without.body"))
