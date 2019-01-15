@@ -1,0 +1,1915 @@
+diff --git a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/CachedCompilationService.scala b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/CachedCompilationService.scala
+index e0d9dd3e11..5da8de8828 100644
+--- a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/CachedCompilationService.scala
++++ b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/CachedCompilationService.scala
+@@ -51,7 +51,7 @@ case class CacheStats(description: String, loadingDurationMillis: Long, loadingE
+   */
+ abstract class CachedCompilationProvider {
+   /** Called before compilation to obtain compilation metatdata from other source. */
+-  def loadCache(current: Option[CachedCompilationService.AnalysisContent]): CacheResult
++  def loadCache(current: Option[CachedCompilationService.AnalysisContent], scalacVersion: String): CacheResult
+ 
+   /** Called when compilation finishes regardless if succesfull or nor  */
+   def compilationFinished(compilationResults: Try[CachedCompilationService.CompilationResults],
+diff --git a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/IdeaIncrementalBuilder.scala b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/IdeaIncrementalBuilder.scala
+index 6c4187cccf..322786fb92 100644
+--- a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/IdeaIncrementalBuilder.scala
++++ b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/IdeaIncrementalBuilder.scala
+@@ -6,20 +6,21 @@ import _root_.java.util
+ import com.intellij.openapi.util.io.FileUtil
+ import com.intellij.util.Processor
+ import org.jetbrains.jps.ModuleChunk
+-import org.jetbrains.jps.builders.java.{JavaBuilderUtil, JavaSourceRootDescriptor}
+-import org.jetbrains.jps.builders.{DirtyFilesHolder, FileProcessor}
++import org.jetbrains.jps.builders.java.{ JavaBuilderUtil, JavaSourceRootDescriptor }
++import org.jetbrains.jps.builders.{ DirtyFilesHolder, FileProcessor }
+ import org.jetbrains.jps.incremental.ModuleLevelBuilder.ExitCode
+ import org.jetbrains.jps.incremental.fs.CompilationRound
+-import org.jetbrains.jps.incremental.messages.{BuildMessage, CompilerMessage, ProgressMessage}
++import org.jetbrains.jps.incremental.messages.{ BuildMessage, CompilerMessage, ProgressMessage }
+ import org.jetbrains.jps.incremental.scala.ScalaBuilder._
+ import org.jetbrains.jps.incremental.scala.data.CompilerData
+-import org.jetbrains.jps.incremental.scala.local.{IdeClientIdea, PackageObjectsData, ScalaReflectMacroExpansionParser}
+-import org.jetbrains.jps.incremental.scala.model.{CompileOrder, IncrementalityType}
++import org.jetbrains.jps.incremental.scala.local.{ IdeClientIdea, PackageObjectsData, ScalaReflectMacroExpansionParser }
++import org.jetbrains.jps.incremental.scala.model.{ CompileOrder, IncrementalityType }
+ 
+ import _root_.scala.collection.JavaConverters._
+ import scala.collection.mutable
+ import scala.collection.mutable.ListBuffer
+ import org.jetbrains.jps.incremental._
++import org.jetbrains.jps.incremental.scala.data.CompilerConfiguration
+ 
+ /**
+   * Nikolay.Tropin
+@@ -37,8 +38,6 @@ class IdeaIncrementalBuilder(category: BuilderCategory) extends ModuleLevelBuild
+     if (isDisabled(context, chunk) || ChunkExclusionService.isExcluded(chunk))
+       return ExitCode.NOTHING_DONE
+ 
+-    checkIncrementalTypeChange(context)
+-
+     context.processMessage(new ProgressMessage("Searching for compilable files..."))
+ 
+     val sourceDependencies = SourceDependenciesProviderService.getSourceDependenciesFor(chunk)
+@@ -87,19 +86,21 @@ class IdeaIncrementalBuilder(category: BuilderCategory) extends ModuleLevelBuild
+ 
+     val scalaSources = sources.filter(_.getName.endsWith(".scala")).asJava
+ 
+-    compile(context, chunk, sources, Seq.empty, modules, client) match {
+-      case Left(error) =>
+-        client.error(error)
+-        ExitCode.ABORT
+-      case _ if client.hasReportedErrors || client.isCanceled => ExitCode.ABORT
+-      case Right(code) =>
+-        if (delta != null && JavaBuilderUtil.updateMappings(context, delta, dirtyFilesHolder, chunk, scalaSources, successfullyCompiled.asJava))
+-          ExitCode.ADDITIONAL_PASS_REQUIRED
+-        else {
+-          if (ScalaReflectMacroExpansionParser.expansions.nonEmpty) ScalaReflectMacroExpansionParser.serializeExpansions(context)
+-          client.progress("Compilation completed", Some(1.0F))
+-          code
+-        }
++    CompilerConfiguration.withConfig(context, chunk) { compilerConfig =>
++      compile(context, chunk,compilerConfig, sources, Seq.empty, modules, client) match {
++        case Left(error) =>
++          client.error(error)
++          ExitCode.ABORT
++        case _ if client.hasReportedErrors || client.isCanceled => ExitCode.ABORT
++        case Right(code) =>
++          if (delta != null && JavaBuilderUtil.updateMappings(context, delta, dirtyFilesHolder, chunk, scalaSources, successfullyCompiled.asJava))
++            ExitCode.ADDITIONAL_PASS_REQUIRED
++          else {
++            if (ScalaReflectMacroExpansionParser.expansions.nonEmpty) ScalaReflectMacroExpansionParser.serializeExpansions(context)
++            client.progress("Compilation completed", Some(1.0F))
++            code
++          }
++      }
+     }
+   }
+ 
+diff --git a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/SbtBuilder.scala b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/SbtBuilder.scala
+index a85ab0d964..63c3e587a8 100644
+--- a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/SbtBuilder.scala
++++ b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/SbtBuilder.scala
+@@ -3,6 +3,8 @@ package org.jetbrains.jps.incremental.scala
+ import _root_.java.util
+ import java.io.File
+ 
++import com.intellij.openapi.diagnostic.Logger
++import com.intellij.openapi.util.Key
+ import com.intellij.openapi.util.io.FileUtil
+ import com.intellij.util.Processor
+ import org.jetbrains.jps.ModuleChunk
+@@ -12,8 +14,9 @@ import org.jetbrains.jps.builders.{BuildRootDescriptor, BuildTarget, DirtyFilesH
+ import org.jetbrains.jps.incremental.ModuleLevelBuilder.ExitCode
+ import org.jetbrains.jps.incremental._
+ import org.jetbrains.jps.incremental.java.JavaBuilder
+-import org.jetbrains.jps.incremental.messages.ProgressMessage
++import org.jetbrains.jps.incremental.messages.{BuildMessage, CompilerMessage, ProgressMessage}
+ import org.jetbrains.jps.incremental.scala.ScalaBuilder._
++import org.jetbrains.jps.incremental.scala.data.CompilerConfiguration
+ import org.jetbrains.jps.incremental.scala.local.IdeClientSbt
+ import org.jetbrains.jps.incremental.scala.model.IncrementalityType
+ import org.jetbrains.jps.incremental.scala.sbtzinc.{CompilerOptionsStore, ModulesFedToZincStore}
+@@ -25,12 +28,18 @@ import _root_.scala.collection.JavaConverters._
+  * @author Pavel Fatin
+  */
+ class SbtBuilder extends ModuleLevelBuilder(BuilderCategory.TRANSLATOR) {
++  private final val LOG: Logger = Logger.getInstance("#org.jetbrains.jps.incremental.scala")
++  val shouldSkipCompilation: Key[Boolean] = Key.create("_java_compiler_enabled_")
++
+   override def getPresentableName = "Scala sbt builder"
+ 
+-  override def buildStarted(context: CompileContext): Unit = {
++  override def chunkBuildStarted(context: CompileContext, chunk: ModuleChunk): Unit = {
+     val project: JpsProject = context.getProjectDescriptor.getProject
+-    if (isScalaProject(project) && !isDisabled(context))
++    if (isScalaProject(project) && !isDisabled(context) && hasScalaModules(chunk)) {
++      LOG.debug("Java builder is disabled by sbtbuilder")
+       JavaBuilder.IS_ENABLED.set(context, false)
++      shouldSkipCompilation.set(context, false)
++    } else shouldSkipCompilation.set(context, true)
+   }
+ 
+   override def build(context: CompileContext,
+@@ -38,10 +47,12 @@ class SbtBuilder extends ModuleLevelBuilder(BuilderCategory.TRANSLATOR) {
+             dirtyFilesHolder: DirtyFilesHolder[JavaSourceRootDescriptor, ModuleBuildTarget],
+             outputConsumer: ModuleLevelBuilder.OutputConsumer): ModuleLevelBuilder.ExitCode = {
+ 
+-    if (isDisabled(context) || ChunkExclusionService.isExcluded(chunk))
++    if (isDisabled(context) || ChunkExclusionService.isExcluded(chunk)) return ExitCode.NOTHING_DONE
++    else if (shouldSkipCompilation.get(context)) {
++      val message = s"skipping Scala files without a Scala SDK in module(s) ${ chunk.getPresentableShortName } in sbtbuilder"
++      context.processMessage(new CompilerMessage("scala", BuildMessage.Kind.WARNING, message))
+       return ExitCode.NOTHING_DONE
+-
+-    checkIncrementalTypeChange(context)
++    }
+ 
+     updateSharedResources(context, chunk)
+ 
+@@ -59,39 +70,43 @@ class SbtBuilder extends ModuleLevelBuilder(BuilderCategory.TRANSLATOR) {
+     val modules = chunk.getModules.asScala.toSet
+     val moduleNames = modules.map(_.getName).toSeq
+ 
+-    val compilerOptionsChanged = CompilerOptionsStore.updateCompilerOptionsCache(context, chunk, moduleNames)
++    CompilerConfiguration.withConfig(context, chunk) { compilerConfig =>
++      val compilerOptionsChanged =
++        CompilerOptionsStore.updateCompilerOptionsCache(context, chunk, moduleNames, compilerConfig)
+ 
+-    if (dirtyFilesFromIntellij.isEmpty &&
+-      !ModulesFedToZincStore.checkIfAnyModuleDependencyWasFedToZinc(context, chunk) &&
+-      !compilerOptionsChanged
+-    ) {
+-      return ExitCode.NOTHING_DONE
+-    }
++      if (dirtyFilesFromIntellij.isEmpty &&
++        !dirtyFilesHolder.hasRemovedFiles &&
++        !ModulesFedToZincStore.checkIfAnyModuleDependencyWasFedToZinc(context, chunk) &&
++        !compilerOptionsChanged
++      ) {
++        return ExitCode.NOTHING_DONE
++      }
+ 
+-    val filesToCompile = collectCompilableFiles(context, chunk)
+-    if (filesToCompile.isEmpty)
+-      return ExitCode.NOTHING_DONE
++      val filesToCompile = collectCompilableFiles(context, chunk)
++      if (filesToCompile.isEmpty)
++        return ExitCode.NOTHING_DONE
+ 
+-    val sources = filesToCompile.keySet.toSeq
++      val sources = filesToCompile.keySet.toSeq
+ 
+-    val client = new IdeClientSbt("scala", context, moduleNames, outputConsumer, filesToCompile.get)
++      val client = new IdeClientSbt("scala", context, moduleNames, outputConsumer, filesToCompile.get)
+ 
+-    logCustomSbtIncOptions(context, chunk, client)
++      logCustomSbtIncOptions(context, chunk, client)
+ 
+-    // assume Zinc will be used after we reach this point
+-    ModulesFedToZincStore.add(context, moduleNames)
++      // assume Zinc will be used after we reach this point
++      ModulesFedToZincStore.add(context, moduleNames)
+ 
+-    compile(context, chunk, dirtyFilesFromIntellij, sources, modules, client) match {
+-      case Left(error) =>
+-        client.error(error)
+-        ExitCode.ABORT
+-      case Right(code) =>
+-        if (client.hasReportedErrors || client.isCanceled) {
++      compile(context, chunk, compilerConfig, dirtyFilesFromIntellij, sources, modules, client) match {
++        case Left(error) =>
++          client.error(error)
+           ExitCode.ABORT
+-        } else {
+-          client.progress("Compilation completed", Some(1.0F))
+-          code
+-        }
++        case Right(code) =>
++          if (client.hasReportedErrors || client.isCanceled) {
++            ExitCode.ABORT
++          } else {
++            client.progress("Compilation completed", Some(1.0F))
++            code
++          }
++      }
+     }
+   }
+ 
+diff --git a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/ScalaBuilder.scala b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/ScalaBuilder.scala
+index 986a942031..b120ff7dd6 100644
+--- a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/ScalaBuilder.scala
++++ b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/ScalaBuilder.scala
+@@ -5,15 +5,15 @@ import java.net.InetAddress
+ import java.util
+ 
+ import com.intellij.openapi.application.PathManager
+-import com.intellij.openapi.diagnostic.{Logger => JpsLogger}
+-import com.intellij.openapi.util.io.FileUtil
++import com.intellij.openapi.diagnostic.{ Logger => JpsLogger }
+ import org.jetbrains.jps.ModuleChunk
+ import org.jetbrains.jps.builders.java.JavaBuilderUtil
+ import org.jetbrains.jps.incremental._
+-import org.jetbrains.jps.incremental.messages.{BuildMessage, CompilerMessage, ProgressMessage}
+-import org.jetbrains.jps.incremental.scala.data.{CompilationData, CompilerData, SbtData}
++import org.jetbrains.jps.incremental.messages.{ BuildMessage, CompilerMessage, ProgressMessage }
++import org.jetbrains.jps.incremental.scala.data.CompilerConfiguration
++import org.jetbrains.jps.incremental.scala.data.{ CompilationData, CompilerData, SbtData }
+ import org.jetbrains.jps.incremental.scala.local.LocalServer
+-import org.jetbrains.jps.incremental.scala.model.{IncrementalityType, ProjectSettings}
++import org.jetbrains.jps.incremental.scala.model.{ IncrementalityType, ProjectSettings }
+ import org.jetbrains.jps.incremental.scala.remote.RemoteServer
+ import org.jetbrains.jps.model.JpsProject
+ import org.jetbrains.jps.model.module.JpsModule
+@@ -29,6 +29,7 @@ object ScalaBuilder {
+ 
+   def compile(context: CompileContext,
+               chunk: ModuleChunk,
++              compilerConfig: CompilerConfiguration,
+               sources: Seq[File],
+               allSources: Seq[File],
+               modules: Set[JpsModule],
+@@ -38,105 +39,26 @@ object ScalaBuilder {
+ 
+     for {
+       sbtData <-  sbtData
+-      compilerData <- CompilerData.from(context, chunk)
+-      compilationData <- CompilationData.from(sources, allSources, context,  chunk)
++      compilationData <- CompilationData.from(sources, allSources, context, chunk, compilerConfig)
+     }
+     yield {
+       scalaLibraryWarning(modules, compilationData, client)
+ 
+       val server = getServer(context)
+-      server.compile(sbtData, compilerData, compilationData, client)
+-    }
+-  }
+-
+-  def checkIncrementalTypeChange(context: CompileContext): Unit = {
+-    def storageFile: Option[File] = {
+-      val projectDir = context.getProjectDescriptor.dataManager.getDataPaths.getDataStorageRoot
+-      if (projectDir != null)
+-        Some(new File(projectDir, "incrementalType.dat"))
+-      else None
+-    }
+-
+-    def getPreviousIncrementalType: Option[IncrementalityType] = {
+-      storageFile.filter(_.exists).flatMap { file =>
+-        val result = using(new DataInputStream(new BufferedInputStream(new FileInputStream(file)))) { in =>
+-          try {
+-            Some(IncrementalityType.valueOf(in.readUTF()))
+-          } catch {
+-            case _: IOException | _: IllegalArgumentException | _: NullPointerException => None
+-          }
+-        }
+-        if (result.isEmpty) file.delete()
+-        result
+-      }
+-    }
+-
+-    def setPreviousIncrementalType(incrType: IncrementalityType) {
+-      storageFile.foreach { file =>
+-        val parentDir = file.getParentFile
+-        if (!parentDir.exists()) parentDir.mkdirs()
+-        using(new DataOutputStream(new BufferedOutputStream(new FileOutputStream(file)))) {
+-          _.writeUTF(incrType.name)
+-        }
+-      }
+-    }
+-
+-    def cleanCaches() {
+-      context.getProjectDescriptor.setFSCache(FSCache.NO_CACHE)
+-      try {
+-        val directory = context.getProjectDescriptor.dataManager.getDataPaths.getDataStorageRoot
+-        FileUtil.delete(directory)
+-      }
+-      catch {
+-        case e: Exception => throw new IOException("Can not delete project system directory: \n" + e.getMessage)
+-      }
+-    }
+-
+-    val settings = projectSettings(context)
+-    val previousIncrementalType = getPreviousIncrementalType
+-    val incrType = settings.getIncrementalityType
+-    previousIncrementalType match {
+-      case _ if JavaBuilderUtil.isForcedRecompilationAllJavaModules(context) => //isRebiuld
+-        setPreviousIncrementalType(incrType)
+-      case None =>
+-      //        ScalaBuilderDelegate.Log.info("scala: cannot find type of the previous incremental compiler, full rebuild may be required")
+-      case Some(`incrType`) => //same incremental type, nothing to be done
+-      case Some(_) if isMakeProject(context) =>
+-        if (ScalaBuilder.isScalaProject(context.getProjectDescriptor.getProject)) {
+-          cleanCaches()
+-          setPreviousIncrementalType(incrType)
+-          context.processMessage(new CompilerMessage("scala", BuildMessage.Kind.WARNING,
+-            "type of incremental compiler has been changed, full rebuild..."))
+-        }
+-      case Some(_) =>
+-        if (ScalaBuilder.isScalaProject(context.getProjectDescriptor.getProject)) {
+-          throw new ProjectBuildException("scala: type of incremental compiler has been changed, full rebuild is required")
+-        }
++      server.compile(sbtData, compilerConfig.data, compilationData, client)
+     }
+   }
+ 
+   // Invokation of these methods can take a long time on large projects (like IDEA's one)
+-  def isScalaProject(project: JpsProject): Boolean = hasScalaSdks(project.getModules)
+-  def hasScalaModules(chunk: ModuleChunk): Boolean = hasScalaSdks(chunk.getModules)
+-  private def hasScalaSdks(modules: util.Collection[JpsModule]): Boolean = {
+-    modules.asScala.exists(SettingsManager.hasScalaSdk)
+-  }
++  def isScalaProject(project: JpsProject): Boolean = project.getModules.asScala.exists(SettingsManager.hasScalaSdk)
++  def hasScalaModules(chunk: ModuleChunk): Boolean = SettingsManager.hasScalaSdk(chunk.representativeTarget().getModule)
+ 
+   def hasBuildModules(chunk: ModuleChunk): Boolean = {
+     chunk.getModules.asScala.exists(_.getName.endsWith("-build")) // gen-idea doesn't use the sbt module type
+   }
+ 
+-  def projectSettings(context: CompileContext): ProjectSettings = SettingsManager.getProjectSettings(context.getProjectDescriptor.getProject)
+-
+-  def isMakeProject(context: CompileContext): Boolean = JavaBuilderUtil.isCompileJavaIncrementally(context) && {
+-    for {
+-      chunk <- context.getProjectDescriptor.getBuildTargetIndex.getSortedTargetChunks(context).asScala
+-      target <- chunk.getTargets.asScala
+-    } {
+-      if (!context.getScope.isAffected(target)) return false
+-    }
+-    true
+-  }
++  def projectSettings(context: CompileContext): ProjectSettings =
++    SettingsManager.getProjectSettings(context.getProjectDescriptor.getProject)
+ 
+   val Log: JpsLogger = JpsLogger.getInstance(ScalaBuilder.getClass.getName)
+ 
+@@ -168,12 +90,11 @@ object ScalaBuilder {
+   }
+ 
+   private def scalaLibraryWarning(modules: Set[JpsModule], compilationData: CompilationData, client: Client) {
+-    val hasScalaFacet = modules.exists(SettingsManager.hasScalaSdk)
+     val hasScalaLibrary = compilationData.classpath.exists(_.getName.startsWith("scala-library"))
+ 
+     val hasScalaSources = compilationData.sources.exists(_.getName.endsWith(".scala"))
+ 
+-    if (hasScalaFacet && !hasScalaLibrary && hasScalaSources) {
++    if (!hasScalaLibrary && hasScalaSources) {
+       val names = modules.map(_.getName).mkString(", ")
+       client.warning("No 'scala-library*.jar' in module dependencies [%s]".format(names))
+     }
+diff --git a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/ZincDataService.scala b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/ZincDataService.scala
+new file mode 100644
+index 0000000000..4ea2152345
+--- /dev/null
++++ b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/ZincDataService.scala
+@@ -0,0 +1,19 @@
++package org.jetbrains.jps.incremental.scala
++
++import org.jetbrains.jps.incremental.scala.data.ZincData
++import org.jetbrains.jps.service.JpsServiceManager
++
++import scala.collection.JavaConverters._
++
++abstract class ZincDataService {
++  def transform(zincData: ZincData): ZincData
++}
++
++object ZincDataService {
++  private val services: Seq[ZincDataService] = JpsServiceManager.getInstance
++    .getExtensions(classOf[ZincDataService]).asScala.toList
++
++  def transform(zincData: ZincData): ZincData = {
++    services.foldLeft(zincData)((data, service) => service.transform(data))
++  }
++}
+\ No newline at end of file
+diff --git a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/data/CompilationData.scala b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/data/CompilationData.scala
+index aa00eb3477..385a4d6cc9 100644
+--- a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/data/CompilationData.scala
++++ b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/data/CompilationData.scala
+@@ -16,7 +16,13 @@ import org.jetbrains.plugin.scala.compiler.NameHashing
+ 
+ import scala.collection.JavaConverters._
+ 
+-case class ZincData(allSources: Seq[File], compilationStartDate: Long, isCompile: Boolean)
++case class ZincData(
++  allSources: Seq[File],
++  compilationStartDate: Long,
++  isCompile: Boolean,
++  ignoredScalacOptions: Seq[String] = Seq.empty,
++  isToJar: Boolean = false
++)
+ 
+ /**
+  * @author Pavel Fatin
+@@ -37,9 +43,12 @@ case class CompilationData(sources: Seq[File],
+ object CompilationData {
+   private val compilationStamp = System.nanoTime()
+ 
+-  def from(sources: Seq[File], allSources: Seq[File], context: CompileContext, chunk: ModuleChunk): Either[String, CompilationData] = {
++  def from(sources: Seq[File],
++           allSources: Seq[File],
++           context: CompileContext,
++           chunk: ModuleChunk,
++           compilerConfiguration: CompilerConfiguration): Either[String, CompilationData] = {
+     val target = chunk.representativeTarget
+-    val module = target.getModule
+ 
+     outputsNotSpecified(chunk) match {
+       case Some(message) => return Left(message)
+@@ -49,9 +58,6 @@ object CompilationData {
+     checkOrCreate(output)
+ 
+     val classpath = ProjectPaths.getCompilationClasspathFiles(chunk, chunk.containsTests, false, true).asScala.toSeq
+-    val compilerSettings = SettingsManager.getProjectSettings(module.getProject).getCompilerSettings(chunk)
+-    val scalaOptions = scalaOptionsFor(compilerSettings, chunk)
+-    val order = compilerSettings.getCompileOrder
+ 
+     createOutputToCacheMap(context).map { outputToCacheMap =>
+ 
+@@ -64,26 +70,19 @@ object CompilationData {
+         throw new RuntimeException(message)
+       })
+ 
+-      val relevantOutputToCacheMap = (outputToCacheMap - output).filter(p => classpath.contains(p._1))
+-
+-      val commonOptions = {
+-        val encoding = context.getProjectDescriptor.getEncodingConfiguration.getPreferredModuleChunkEncoding(chunk)
+-        Option(encoding).map(Seq("-encoding", _)).getOrElse(Seq.empty)
+-      }
+-
+-      val javaOptions = javaOptionsFor(context, chunk)
++      val classpathSet = classpath.toSet
++      val relevantOutputToCacheMap = (outputToCacheMap - output).filter(p => classpathSet.contains(p._1))
+ 
+       val outputGroups = createOutputGroups(chunk)
+ 
+-      val canonicalSources = sources.map(_.getCanonicalFile)
+-
+       val isCompile =
+         !JavaBuilderUtil.isCompileJavaIncrementally(context) &&
+           !JavaBuilderUtil.isForcedRecompilationAllJavaModules(context)
+ 
+-      CompilationData(canonicalSources, classpath, output, commonOptions ++ scalaOptions, commonOptions ++ javaOptions,
+-        order, cacheFile, relevantOutputToCacheMap, outputGroups,
+-        ZincData(allSources, compilationStamp, isCompile))
++      val zincData = ZincDataService.transform(ZincData(allSources, compilationStamp, isCompile))
++      CompilationData(sources, classpath, output,
++        compilerConfiguration.scalacOps, compilerConfiguration.javacOpts,
++        compilerConfiguration.order, cacheFile, relevantOutputToCacheMap, outputGroups, zincData)
+     }
+   }
+ 
+@@ -162,9 +161,9 @@ object CompilationData {
+ 
+       for ((target, output) <- targetToOutput.toMap)
+       yield (
+-        output.getCanonicalFile,
++        output,
+         new File(
+-          paths.getTargetDataRoot(target).getCanonicalFile,
++          output,
+           s"cache-${target.getPresentableName}.zip")
+       )
+     }
+diff --git a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/data/CompilerConfiguration.scala b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/data/CompilerConfiguration.scala
+new file mode 100644
+index 0000000000..06bb599506
+--- /dev/null
++++ b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/data/CompilerConfiguration.scala
+@@ -0,0 +1,36 @@
++package org.jetbrains.jps.incremental.scala.data
++
++import org.jetbrains.jps.ModuleChunk
++import org.jetbrains.jps.incremental.CompileContext
++import org.jetbrains.jps.incremental.ModuleLevelBuilder.ExitCode
++import org.jetbrains.jps.incremental.messages.BuildMessage
++import org.jetbrains.jps.incremental.messages.CompilerMessage
++import org.jetbrains.jps.incremental.scala.SettingsManager
++import org.jetbrains.jps.incremental.scala.data.CompilationData.javaOptionsFor
++import org.jetbrains.jps.incremental.scala.data.CompilationData.scalaOptionsFor
++import org.jetbrains.jps.incremental.scala.model.CompileOrder
++
++case class CompilerConfiguration(data: CompilerData, scalacOps: Seq[String], javacOpts: Seq[String], order: CompileOrder)
++
++object CompilerConfiguration {
++  def withConfig(context: CompileContext, chunk: ModuleChunk)(op: CompilerConfiguration => ExitCode): ExitCode = {
++    val commonOptions = {
++      val encoding = context.getProjectDescriptor.getEncodingConfiguration.getPreferredModuleChunkEncoding(chunk)
++      Option(encoding).map(Seq("-encoding", _)).getOrElse(Seq.empty)
++    }
++    val compilerSettings =
++      SettingsManager.getProjectSettings(context.getProjectDescriptor.getProject).getCompilerSettings(chunk)
++
++    val order = compilerSettings.getCompileOrder
++
++    CompilerData.from(context, chunk) match {
++      case Right(data) => op(CompilerConfiguration(data,
++        scalacOps = commonOptions ++ scalaOptionsFor(compilerSettings, chunk),
++        javacOpts = commonOptions ++ javaOptionsFor(context, chunk), order)
++      )
++      case Left(error) =>
++        context.processMessage(new CompilerMessage("scala", BuildMessage.Kind.ERROR, error))
++         ExitCode.ABORT
++    }
++  }
++}
+diff --git a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/data/CompilerData.scala b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/data/CompilerData.scala
+index 137b04b1fb..715b203b4e 100644
+--- a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/data/CompilerData.scala
++++ b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/data/CompilerData.scala
+@@ -24,17 +24,14 @@ object CompilerData {
+     val target = chunk.representativeTarget
+     val module = target.getModule
+ 
+-    val compilerJars = if (SettingsManager.hasScalaSdk(module)) {
+-      compilerJarsIn(module).flatMap { case jars: CompilerJars =>
++    val compilerJars =
++      compilerJarsIn(module).flatMap { jars: CompilerJars =>
+         val absentJars = jars.files.filter(!_.exists)
+         Either.cond(absentJars.isEmpty,
+           Some(jars),
+           "Scala compiler JARs not found (module '" + chunk.representativeTarget().getModule.getName + "'): "
+                   + absentJars.map(_.getPath).mkString(", "))
+       }
+-    } else {
+-      Right(None)
+-    }
+ 
+     compilerJars.flatMap { jars =>
+       val incrementalityType = SettingsManager.getProjectSettings(project.getProject).getIncrementalityType
+diff --git a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/AbstractCompiler.scala b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/AbstractCompiler.scala
+index 1c4fbeb2cc..0acf364bdd 100644
+--- a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/AbstractCompiler.scala
++++ b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/AbstractCompiler.scala
+@@ -52,6 +52,8 @@ abstract class AbstractCompiler extends Compiler {
+ 
+   class ClientProgress(client: Client) extends CompileProgress {
+ 
++    private var lastTimeChecked = System.currentTimeMillis()
++    private final val cancelThreshold = 1000L
+ 
+     def startUnit(phase: String, unitPath: String) {
+       val unitName = new File(unitPath).getName
+@@ -60,7 +62,14 @@ abstract class AbstractCompiler extends Compiler {
+ 
+     def advance(current: Int, total: Int): Boolean = {
+       client.progress("", Some(current.toFloat / total.toFloat))
+-      !client.isCanceled
++      // Since isCanceled is blocking method (waiting on flush on socket connection to finish).
++      // We don't want to block compilation more often then once per second (this is optimalization)
++      // It also means that compilation may be canceled 1 sec later - but this is not a problem.
++      val time = System.currentTimeMillis()
++      if (time - lastTimeChecked > cancelThreshold) {
++        lastTimeChecked = time
++        !client.isCanceled
++      } else true
+     }
+ 
+     def generated(source: File, module: File, name: String): Unit = {
+@@ -122,5 +131,6 @@ abstract class AbstractCompiler extends Compiler {
+       client.message(kind, msg, source, line, column)
+     }
+   }
++
+ }
+ 
+diff --git a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/IdeClientIdea.scala b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/IdeClientIdea.scala
+index 074621fb0e..e21cfe1700 100644
+--- a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/IdeClientIdea.scala
++++ b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/IdeClientIdea.scala
+@@ -31,6 +31,9 @@ class IdeClientIdea(compilerName: String,
+   private val tempSuccessfullyCompiled = mutable.Set[File]()
+   private val packageObjectsBaseClasses = ArrayBuffer[PackageObjectBaseClass]()
+ 
++  override def startProcessingOutput(output: File): Unit = {}
++  override def stopProcessingOutput(output: File): Unit = {}
++
+   //logic is taken from org.jetbrains.jps.incremental.java.OutputFilesSink.save
+   def generated(source: File, outputFile: File, name: String): Unit = {
+     val compiledClass = new LazyCompiledClass(outputFile, source, name)
+diff --git a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/IdeClientSbt.scala b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/IdeClientSbt.scala
+index 3d8299173d..94edfb75c4 100644
+--- a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/IdeClientSbt.scala
++++ b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/IdeClientSbt.scala
+@@ -1,41 +1,137 @@
+ package org.jetbrains.jps.incremental.scala
+ package local
+ 
++import java.io.BufferedInputStream
+ import java.io.File
++import java.io.FileInputStream
+ import java.util
++import java.util.zip.ZipEntry
++import java.util.zip.ZipInputStream
+ 
+ import com.intellij.openapi.util.Key
+ import com.intellij.openapi.util.io.FileUtil
+-import org.jetbrains.jps.builders.{BuildRootDescriptor, BuildTarget}
++import org.jetbrains.jps.builders.{ BuildRootDescriptor, BuildTarget }
++import org.jetbrains.jps.incremental.BinaryContent
++import org.jetbrains.jps.incremental.CompiledClass
+ import org.jetbrains.jps.incremental.fs.CompilationRound
+-import org.jetbrains.jps.incremental.{FSOperations, CompileContext}
++import org.jetbrains.jps.incremental.{ CompileContext, FSOperations }
+ import org.jetbrains.jps.incremental.ModuleLevelBuilder.OutputConsumer
+ 
+ import scala.collection.JavaConverters._
+ import scala.util.control.Exception._
+-
++import sbt.internal.inc.JarUtils
+ 
+ /**
+  * Nikolay.Tropin
+  * 11/18/13
+  */
+ class IdeClientSbt(compilerName: String,
+-                   context: CompileContext,
+-                   modules: Seq[String],
+-                   consumer: OutputConsumer,
+-                   sourceToTarget: File => Option[BuildTarget[_ <: BuildRootDescriptor]])
+-        extends IdeClient(compilerName, context, modules, consumer) {
+-
+-  def generated(source: File, outputFile: File, name: String) {
+-    invalidateBoundForms(source)
+-    val target = sourceToTarget(source).getOrElse {
+-      throw new RuntimeException("Unknown source file: " + source)
++  context: CompileContext,
++  modules: Seq[String],
++  consumer: OutputConsumer,
++  sourceToTarget: File => Option[BuildTarget[_ <: BuildRootDescriptor]])
++  extends IdeClient(compilerName, context, modules, consumer) {
++
++  override def processed(source: File): Unit = ()
++
++  override def startProcessingOutput(output: File): Unit = ()
++
++  override def stopProcessingOutput(output: File): Unit = ()
++
++  override def sourceStarted(source: String): Unit = {
++    FSOperations.markDirty(context, CompilationRound.NEXT, new File(source))
++  }
++
++  override def allGenerated(generated: Seq[(File, Seq[(File, String)])]): Unit = {
++
++    case class GeneratedClass(source: File, binary: File, name: String) {
++      lazy val pathInJar: String = JarUtils.ClassInJar.fromFile(binary).toClassFilePath
+     }
+-    val compiledClass = new LazyCompiledClass(outputFile, source, name)
+-    consumer.registerCompiledClass(target, compiledClass)
++
++    def resolveOutputJar(generatedClasses: Seq[GeneratedClass]) = {
++      generatedClasses
++        .headOption
++        .map(_.binary)
++        .filter(JarUtils.isClassInJar)
++        .map(classFile => JarUtils.ClassInJar.fromFile(classFile).splitJarReference._1)
++    }
++
++    def prepareLazyLoadedClassBinaryContent(generatedClasses: Seq[GeneratedClass]): Unit = {
++      generatedClasses.foreach {
++        case GeneratedClass(sourceFile, classFile, className) =>
++          this.generated(sourceFile, classFile, className)
++      }
++    }
++
++    def prefetchClassBinaryContentFromJar(jarFile: File, generatedClasses: Seq[GeneratedClass]): Unit = {
++      val binaryContentForClasses = loadBinaryContent(jarFile, generatedClasses)
++      for {
++        cls <- generatedClasses
++        binaryContent <- binaryContentForClasses.get(cls.pathInJar)
++      } {
++        invalidateBoundForms(cls.source)
++        val compiledClass = new CompiledClass(cls.binary, cls.source, cls.name, binaryContent)
++        register(compiledClass)
++      }
++    }
++
++    def loadBinaryContent(jarFile: File, generatedClasses: Seq[GeneratedClass]) = {
++      def withJarInputStream[A](jar: File)(action: ZipInputStream => A): A = {
++        val stream = new ZipInputStream(new BufferedInputStream(new FileInputStream(jar)))
++        try action(stream) finally stream.close()
++      }
++
++      def entries(stream: ZipInputStream): Iterator[ZipEntry] = {
++        Iterator.continually(stream.getNextEntry).takeWhile(_ != null)
++      }
++
++      withJarInputStream(jarFile) { stream =>
++        val neededClassFiles: Set[String] = generatedClasses.map(_.pathInJar)(collection.breakOut)
++        entries(stream).flatMap { entry =>
++          val name = entry.getName
++          if (neededClassFiles.contains(name)) {
++            val content = new BinaryContent(FileUtil.loadBytes(stream))
++            Some(name -> content)
++          } else {
++            None
++          }
++        }.toMap
++      }
++    }
++
++    val generatedClasses = for {
++      (sourceFile, binaries) <- generated
++      (classFile, className) <- binaries
++    } yield GeneratedClass(sourceFile, classFile, className)
++
++    resolveOutputJar(generatedClasses) match {
++      case Some(jarFile) =>
++        prefetchClassBinaryContentFromJar(jarFile, generatedClasses)
++      case None =>
++        prepareLazyLoadedClassBinaryContent(generatedClasses)
++    }
++  }
++
++  def generated(sourceFile: File, classFile: File, className: String) {
++    invalidateBoundForms(sourceFile)
++
++    val compiledClass =
++      if (JarUtils.isClassInJar(classFile)) {
++        new JaredLazyCompiledClass(classFile, sourceFile, className)
++      } else {
++        new LazyCompiledClass(classFile, sourceFile, className)
++      }
++
++    register(compiledClass)
+   }
+ 
+-  def processed(source: File): Unit = {}
++  private def register(compiledClass: CompiledClass): Unit = {
++    val sourceFile = compiledClass.getSourceFile
++    val target = sourceToTarget(sourceFile).getOrElse {
++      throw new RuntimeException("Unknown source file: " + sourceFile)
++    }
++    consumer.registerCompiledClass(target, compiledClass)
++  }
+ 
+   // TODO Expect JPS compiler in UI-designer to take generated class events into account
+   private val FormsToCompileKey = catching(classOf[ClassNotFoundException], classOf[NoSuchFieldException]).opt {
+@@ -60,7 +156,4 @@ class IdeClientSbt(compilerName: String,
+     }
+   }
+ 
+-  override def sourceStarted(source: String): Unit = {
+-    FSOperations.markDirty(context, CompilationRound.NEXT, new File(source))
+-  }
+ }
+\ No newline at end of file
+diff --git a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/IdeaIncrementalCompiler.scala b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/IdeaIncrementalCompiler.scala
+index 50df3e0984..5005762246 100644
+--- a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/IdeaIncrementalCompiler.scala
++++ b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/IdeaIncrementalCompiler.scala
+@@ -91,6 +91,8 @@ abstract class ClientCallbackBase extends xsbti.AnalysisCallback {
+   override def enabled(): Boolean = false
+ 
+   override def mainClass(sourceFile: File, className: String): Unit = {}
++
++  override def classesInOutputJar(): java.util.Set[String] = java.util.Collections.emptySet()
+ }
+ 
+ private object emptyChanges extends DependencyChanges {
+diff --git a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/LazyCompiledClass.scala b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/LazyCompiledClass.scala
+index 173d454f32..97b7cf46fe 100644
+--- a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/LazyCompiledClass.scala
++++ b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/LazyCompiledClass.scala
+@@ -2,9 +2,11 @@ package org.jetbrains.jps.incremental.scala
+ package local
+ 
+ import java.io.File
++import java.util.jar.JarFile
+ 
+ import com.intellij.openapi.util.io.FileUtil
+-import org.jetbrains.jps.incremental.{BinaryContent, CompiledClass}
++import org.jetbrains.jps.incremental.{ BinaryContent, CompiledClass }
++import sbt.internal.inc.JarUtils
+ 
+ /**
+  * Nikolay.Tropin
+@@ -12,14 +14,14 @@ import org.jetbrains.jps.incremental.{BinaryContent, CompiledClass}
+  */
+ // TODO expect future JPS API to load the generated file content lazily (on demand)
+ private class LazyCompiledClass(outputFile: File, sourceFile: File, className: String)
+-        extends CompiledClass(outputFile, sourceFile, className, new BinaryContent(Array.empty)){
++  extends CompiledClass(outputFile, sourceFile, className, new BinaryContent(Array.empty)) {
+ 
+   private var loadedContent: Option[BinaryContent] = None
+   private var contentIsSet = false
+ 
+   override def getContent: BinaryContent = {
+     if (contentIsSet) super.getContent else loadedContent.getOrElse {
+-      val content = new BinaryContent(FileUtil.loadFileBytes(outputFile))
++      val content = new BinaryContent(loadBytes())
+       loadedContent = Some(content)
+       content
+     }
+@@ -30,4 +32,19 @@ private class LazyCompiledClass(outputFile: File, sourceFile: File, className: S
+     loadedContent = None
+     contentIsSet = true
+   }
++
++  protected def loadBytes(): Array[Byte] = FileUtil.loadFileBytes(outputFile)
+ }
++
++private class JaredLazyCompiledClass(outputFile: File, sourceFile: File, className: String)
++  extends LazyCompiledClass(outputFile, sourceFile, className) {
++  override protected def loadBytes() = {
++    val (jarPath, jarEntry) = JarUtils.ClassInJar.fromFile(outputFile).splitJarReference
++    val jarFile = new JarFile(jarPath)
++    try {
++      val entry = jarFile.getJarEntry(jarEntry)
++      val input = jarFile.getInputStream(entry)
++      FileUtil.loadBytes(input)
++    } finally jarFile.close()
++  }
++}
+\ No newline at end of file
+diff --git a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/SbtCompiler.scala b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/SbtCompiler.scala
+index 0252ba1f51..81523275ad 100644
+--- a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/SbtCompiler.scala
++++ b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/SbtCompiler.scala
+@@ -3,9 +3,10 @@ package local
+ 
+ import java.io.File
+ import java.util.Optional
++import java.util.jar.JarFile
+ 
+ import org.jetbrains.jps.incremental.scala.data.CompilationData
+-import org.jetbrains.jps.incremental.scala.local.zinc.{BinaryToSource, _}
++import org.jetbrains.jps.incremental.scala.local.zinc.{ BinaryToSource, _ }
+ import org.jetbrains.jps.incremental.scala.model.CompileOrder
+ import org.jetbrains.plugin.scala.compiler.NameHashing
+ import xsbti.compile._
+@@ -15,17 +16,16 @@ import zinc.Utils._
+ import scala.util.Try
+ 
+ /**
+-  * @author Pavel Fatin
+-  */
++ * @author Pavel Fatin
++ */
+ class SbtCompiler(javaTools: JavaTools, optScalac: Option[ScalaCompiler], fileToStore: File => AnalysisStore) extends AbstractCompiler {
+   def compile(compilationData: CompilationData, client: Client): Unit = optScalac match {
+     case Some(scalac) => doCompile(compilationData, client, scalac)
+     case _ =>
+-      client.error(s"No scalac found to compile scala sources: ${compilationData.sources.take(10).mkString("\n")}...")
++      client.error(s"No scalac found to compile scala sources: ${ compilationData.sources.take(10).mkString("\n") }...")
+   }
+ 
+   private def doCompile(compilationData: CompilationData, client: Client, scalac: ScalaCompiler): Unit = {
+-    val startTime = System.currentTimeMillis()
+     client.progress("Loading cached results...")
+ 
+     val incrementalCompiler = new IncrementalCompilerImpl
+@@ -37,7 +37,7 @@ class SbtCompiler(javaTools: JavaTools, optScalac: Option[ScalaCompiler], fileTo
+     }
+ 
+     val analysisStore = fileToStore(compilationData.cacheFile)
+-    val zincMetadata = CompilationMetadata.load(analysisStore, client, compilationData)
++    val zincMetadata = CompilationMetadata.load(analysisStore, client, compilationData, scalac.scalaInstance().version())
+     import zincMetadata._
+ 
+     client.progress("Searching for changed files...")
+@@ -53,8 +53,10 @@ class SbtCompiler(javaTools: JavaTools, optScalac: Option[ScalaCompiler], fileTo
+ 
+     val incOptions = IncOptions.of()
+       .withExternalHooks(IntelljExternalHooks(intellijLookup, intellijClassfileManager))
++      .withStoreApis(true)
+       .withRecompileOnMacroDef(Optional.of(false))
+       .withTransitiveStep(5) // Default 3 was not enough for us
++      .withIgnoredScalacOptions(compilationData.zincData.ignoredScalacOptions.toArray)
+ 
+     val cs = incrementalCompiler.compilers(javaTools, scalac)
+     val setup = incrementalCompiler.setup(
+@@ -67,10 +69,15 @@ class SbtCompiler(javaTools: JavaTools, optScalac: Option[ScalaCompiler], fileTo
+       Option(progress),
+       Array.empty)
+     val previousResult = PreviousResult.create(Optional.of(previousAnalysis), previousSetup.toOptional)
++
++    val finalOutput = if (compilationData.zincData.isToJar) {
++      new File(compilationData.output.getParentFile, compilationData.output.getName + ".jar")
++    } else compilationData.output
++
+     val inputs = incrementalCompiler.inputs(
+       compilationData.classpath.toArray,
+       compilationData.zincData.allSources.toArray,
+-      compilationData.output,
++      finalOutput,
+       compilationData.scalaOptions.toArray,
+       compilationData.javaOptions.toArray,
+       100,
+@@ -78,7 +85,8 @@ class SbtCompiler(javaTools: JavaTools, optScalac: Option[ScalaCompiler], fileTo
+       order,
+       cs,
+       setup,
+-      previousResult)
++      previousResult,
++      temporaryClassesDirectory = Optional.empty())
+ 
+     val compilationResult = Try {
+       val result: CompileResult = incrementalCompiler.compile(inputs, logger)
+@@ -90,15 +98,26 @@ class SbtCompiler(javaTools: JavaTools, optScalac: Option[ScalaCompiler], fileTo
+ 
+         val binaryToSource = BinaryToSource(result.analysis, compilationData)
+ 
+-        def processGeneratedFile(classFile: File): Unit = {
+-          for (source <- binaryToSource.classfileToSources(classFile))
+-            client.generated(source, classFile, binaryToSource.className(classFile))
+-        }
++        client.startProcessingOutput(finalOutput)
++
++        val importedBinaries = if (cacheDetails.isCached) previousAnalysis.asInstanceOf[Analysis].stamps.allProducts else Nil
++        val generatedClassFiles = intellijClassfileManager.generatedDuringCompilation().flatten
++        val allClassFiles = importedBinaries ++ generatedClassFiles
++
++        def sourceForBinary(binary: File): Option[File] =
++          binaryToSource.classfileToSources(binary).headOption
++
++        def addClassNames(classFiles: Iterable[File]): Seq[(File, String)] =
++          classFiles.map(cf => (cf, binaryToSource.className(cf))).toVector
++
++        val allGenerated = allClassFiles
++          .groupBy(sourceForBinary)
++          .collect { case (Some(source), classFiles) => source -> addClassNames(classFiles) }
++          .toVector
+ 
+-        intellijClassfileManager.generatedDuringCompilation().flatten.foreach(processGeneratedFile)
++        client.allGenerated(allGenerated)
+ 
+-        if (cacheDetails.isCached)
+-          previousAnalysis.asInstanceOf[Analysis].stamps.allProducts.foreach(processGeneratedFile)
++        client.stopProcessingOutput(finalOutput)
+       }
+       result
+     }
+@@ -115,13 +134,13 @@ class SbtCompiler(javaTools: JavaTools, optScalac: Option[ScalaCompiler], fileTo
+         sourcesForInvalidation.foreach(source => client.sourceStarted(source.getAbsolutePath))
+       case e: Throwable =>
+         // Invalidate analysis
+-        previousSetup.foreach(previous => analysisStore.set( AnalysisContents.create(Analysis.empty, previous)))
++        previousSetup.foreach(previous => analysisStore.set(AnalysisContents.create(Analysis.empty, previous)))
+ 
+         // Keep files dirty
+         compilationData.zincData.allSources.foreach(source => client.sourceStarted(source.getAbsolutePath))
+ 
+         val msg =
+-          s"""Compilation faild when compiling to: ${compilationData.output}
++          s"""Compilation failed when compiling to: ${compilationData.output}
+               |  ${e.getMessage}
+               |  ${e.getStackTrace.mkString("\n  ")}
+           """.stripMargin
+diff --git a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/worksheet/WorksheetServer.scala b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/worksheet/WorksheetServer.scala
+index 394937eafc..229b843d13 100644
+--- a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/worksheet/WorksheetServer.scala
++++ b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/worksheet/WorksheetServer.scala
+@@ -4,11 +4,11 @@ import java.io._
+ import java.net.URL
+ import java.nio.ByteBuffer
+ 
+-import com.intellij.util.Base64Converter
+ import com.martiansoftware.nailgun.ThreadLocalPrintStream
+ import org.jetbrains.jps.incremental.scala.data.CompilerJars
+ import org.jetbrains.jps.incremental.scala.local.worksheet.compatibility.WorksheetArgsJava
+-import org.jetbrains.jps.incremental.scala.remote.{Arguments, EventGeneratingClient, WorksheetOutputEvent}
++import org.jetbrains.jps.incremental.scala.remote.Protocol
++import org.jetbrains.jps.incremental.scala.remote.{ Arguments, EventGeneratingClient, WorksheetOutputEvent }
+ 
+ import scala.collection.JavaConverters._
+ 
+@@ -102,8 +102,8 @@ object WorksheetServer {
+       if (buffer.position() == 0) return
+       val event = WorksheetOutputEvent(new String(buffer.array(), 0, buffer.position()))
+       buffer.clear()
+-      val encode = Base64Converter.encode(event.toBytes)
+-      delegateOut.write(if (standalone && !encode.endsWith("=")) (encode + "=").getBytes else encode.getBytes)
++      val encode = Protocol.serializeEvent(event, standalone)
++      delegateOut.write(encode)
+     }
+   }
+   
+diff --git a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/zinc/CompilationMetadata.scala b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/zinc/CompilationMetadata.scala
+index 2e45941b65..268ead97e8 100644
+--- a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/zinc/CompilationMetadata.scala
++++ b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/zinc/CompilationMetadata.scala
+@@ -66,7 +66,7 @@ object CompilationMetadata {
+ 
+     val cachedResults: List[CacheResult] = cacheProviders.map{
+       provider =>
+-        try provider.loadCache(analysisFromLocalStore.toOption) catch {
++        try provider.loadCache(analysisFromLocalStore.toOption, scalaVersion) catch {
+           case NonFatal(e) =>
+             loaderErrored(e)
+           case e: ClassNotFoundException =>
+diff --git a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/zinc/IntellijEntryLookup.scala b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/zinc/IntellijEntryLookup.scala
+index 490ca45eb5..ae27257168 100644
+--- a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/zinc/IntellijEntryLookup.scala
++++ b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/local/zinc/IntellijEntryLookup.scala
+@@ -1,6 +1,8 @@
+ package org.jetbrains.jps.incremental.scala.local.zinc
+ 
+ import java.io.File
++import java.io.PrintWriter
++import java.io.StringWriter
+ import java.util.Optional
+ 
+ import org.jetbrains.jps.incremental.scala.data.CompilationData
+diff --git a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/remote/Arguments.scala b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/remote/Arguments.scala
+index 3b25445626..34bde2989c 100644
+--- a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/remote/Arguments.scala
++++ b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/remote/Arguments.scala
+@@ -48,10 +48,14 @@ case class Arguments(sbtData: SbtData, compilerData: CompilerData, compilationDa
+       filesToPaths(sourceRoots),
+       filesToPaths(outputDirs), 
+       sequenceToString(worksheetFiles),
+-      //sbtIncOptions
+       filesToPaths(compilationData.zincData.allSources),
+       compilationData.zincData.compilationStartDate.toString,
+-      compilationData.zincData.isCompile.toString
++      compilationData.zincData.isCompile.toString,
++      sequenceToString(compilationData.zincData.ignoredScalacOptions),
++      compilationData.zincData.isToJar.toString
++      // If you are adding something here (or removing), make sure it is aligned
++      // with org.jetbrains.plugins.scala.compiler.RemoteServerConnectorBase.arguments
++      // or you will break expression evaluator.
+     )
+   }
+ }
+@@ -85,6 +89,8 @@ object Arguments {
+     ) :+ PathsToFiles(allSources)
+       :+ startDate
+       :+ StringToBoolean(isCompile)
++      :+ StringToSequence(ignoredScalacOptions)
++      :+ StringToBoolean(toJar)
+      =>
+ 
+       val sourceJars = SbtData.SourceJars(sourceJar_2_10, sourceJar_2_11)
+@@ -107,7 +113,7 @@ object Arguments {
+ 
+       val outputGroups = sourceRoots zip outputDirs
+ 
+-      val zincData = ZincData(allSources, startDate.toLong, isCompile)
++      val zincData = ZincData(allSources, startDate.toLong, isCompile, ignoredScalacOptions, toJar)
+ 
+       val compilationData = CompilationData(sources, classpath, output, scalaOptions, javaOptions, CompileOrder.valueOf(order), cacheFile, outputToCacheMap, outputGroups, zincData)
+ 
+diff --git a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/remote/AsynchEventGenerator.scala b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/remote/AsynchEventGenerator.scala
+index 1733141371..3c59419f02 100644
+--- a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/remote/AsynchEventGenerator.scala
++++ b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/remote/AsynchEventGenerator.scala
+@@ -5,10 +5,27 @@ import java.util.concurrent._
+ class AsynchEventGenerator(writeEvent: Event => Unit) {
+ 
+   private val executors = Executors.newFixedThreadPool(1)
++  private var skipProgressMessages = false
+ 
+-  def listener(e: Event): Unit = executors.submit(new Runnable {
+-    override def run(): Unit = writeEvent(e)
+-  })
++  def listener(e: Event): Unit = {
++    e match {
++      case _: ProgressEvent if skipProgressMessages =>
++        return
++      case _: StartProcessingOutputEvent =>
++        skipProgressMessages = true
++      case _: StopProcessingOutputEvent =>
++        skipProgressMessages = false
++      case _ =>
++    }
++    executors.submit(new Runnable {
++      override def run(): Unit = {
++        // if compilcation is done no need to process progress events anymore...
++        if (!skipProgressMessages || !e.isInstanceOf[ProgressEvent]) {
++          writeEvent(e)
++        }
++      }
++    })
++  }
+ 
+   def complete(): Unit = {
+     executors.shutdown()
+diff --git a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/remote/EventGeneratingClient.scala b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/remote/EventGeneratingClient.scala
+index 76a76d6ac5..50875e2697 100644
+--- a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/remote/EventGeneratingClient.scala
++++ b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/remote/EventGeneratingClient.scala
+@@ -27,7 +27,7 @@ class EventGeneratingClient(writeEvent: Event => Unit, canceled: => Boolean) ext
+   }
+ 
+   def progress(text: String, done: Option[Float]) {
+-    listener(ProgressEvent(text, done))
++    if (text.nonEmpty) listener(ProgressEvent(text, done))
+   }
+ 
+   def debug(text: String) {
+@@ -38,6 +38,14 @@ class EventGeneratingClient(writeEvent: Event => Unit, canceled: => Boolean) ext
+     listener(GeneratedEvent(source, module, name))
+   }
+ 
++  override def allGenerated(generated: Seq[(File, Seq[(File, String)])]) {
++    listener(AllGeneratedEvent(generated))
++  }
++
++  override def startProcessingOutput(output: File): Unit = listener(StartProcessingOutputEvent(output))
++
++  override def stopProcessingOutput(output: File): Unit = listener(StopProcessingOutputEvent(output))
++
+   def deleted(module: File) {
+     listener(DeletedEvent(module))
+   }
+diff --git a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/remote/Main.scala b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/remote/Main.scala
+index 3cd881df79..703121887f 100644
+--- a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/remote/Main.scala
++++ b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/remote/Main.scala
+@@ -2,9 +2,10 @@ package org.jetbrains.jps.incremental.scala
+ package remote
+ 
+ import java.io._
+-import java.util.{Timer, TimerTask}
++import java.util.Base64
++import java.util.zip.InflaterInputStream
++import java.util.{ Timer, TimerTask }
+ 
+-import com.intellij.util.Base64Converter
+ import com.martiansoftware.nailgun.NGContext
+ import org.jetbrains.jps.incremental.messages.BuildMessage.Kind
+ import org.jetbrains.jps.incremental.scala.local.LocalServer
+@@ -34,10 +35,7 @@ object Main {
+     var hasErrors = false
+ 
+     val client = {
+-      val eventHandler = (event: Event) => {
+-        val encode = Base64Converter.encode(event.toBytes)
+-        out.write((if (standalone && !encode.endsWith("=")) encode + "=" else encode).getBytes)
+-      }
++      val eventHandler = (event: Event) => out.write(Protocol.serializeEvent(event, standalone))
+       new EventGeneratingClient(eventHandler, out.checkError) {
+         override def error(text: String, source: Option[File], line: Option[Long], column: Option[Long]) {
+           hasErrors = true
+@@ -56,18 +54,13 @@ object Main {
+     System.setOut(System.err)
+ 
+     try {
+-      val args = {
+-        val strings = arguments.map {
+-          arg =>
+-            val s = new String(Base64Converter.decode(arg.getBytes), "UTF-8")
+-            if (s == "#STUB#") "" else s
+-        }
+-        Arguments.from(strings)
++      val args = Arguments.from(Protocol.deserializeArgs(arguments))
++      if (!worksheetServer.isRepl(args)) {
++        Server.compile(args.sbtData, args.compilerData, args.compilationData, client)
++      }
++      if (!hasErrors) {
++        worksheetServer.loadAndRun(args, out, client, standalone)
+       }
+-
+-      if (!worksheetServer.isRepl(args)) Server.compile(args.sbtData, args.compilerData, args.compilationData, client)
+-
+-      if (!hasErrors) worksheetServer.loadAndRun(args, out, client, standalone)
+     } catch {
+       case e: Throwable =>
+         client.trace(e)
+@@ -76,7 +69,7 @@ object Main {
+     }
+   }
+ 
+-  private def cancelShutdown() = synchronized {
++  private def cancelShutdown(): Unit = synchronized {
+     if (shutdownTimer != null) {
+       shutdownTimer.cancel()
+       shutdownTimer = null
+diff --git a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/sbtzinc/CompilerOptionsStore.scala b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/sbtzinc/CompilerOptionsStore.scala
+index bb2a9f24e4..6ae9c69bd5 100644
+--- a/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/sbtzinc/CompilerOptionsStore.scala
++++ b/scala/compiler-jps/src/org/jetbrains/jps/incremental/scala/sbtzinc/CompilerOptionsStore.scala
+@@ -4,9 +4,9 @@ import java.nio.file.StandardOpenOption._
+ import java.nio.file._
+ 
+ import org.jetbrains.jps.ModuleChunk
+-import org.jetbrains.jps.incremental.CompileContext
++import org.jetbrains.jps.incremental.{CompileContext, ModuleBuildTarget}
+ import org.jetbrains.jps.incremental.scala.SettingsManager
+-import org.jetbrains.jps.incremental.scala.data.CompilationData
++import org.jetbrains.jps.incremental.scala.data.CompilerConfiguration
+ 
+ import scala.collection.JavaConverters._
+ 
+@@ -20,10 +20,13 @@ object CompilerOptionsStore {
+   /**
+     * @return true if compiler options change was detected
+     */
+-  def updateCompilerOptionsCache(context: CompileContext, chunk: ModuleChunk, moduleNames: Seq[String]): Boolean = {
+-    val scalacOptsCacheFile = getCacheFileFor(context, moduleNames)
++  def updateCompilerOptionsCache(context: CompileContext,
++                                 chunk: ModuleChunk,
++                                 moduleNames: Seq[String],
++                                 compilerConfig: CompilerConfiguration): Boolean = {
++    val scalacOptsCacheFile = getCacheFileFor(context, chunk.representativeTarget())
+     val previousScalacOpts = readCachedOptions(scalacOptsCacheFile)
+-    val currentOpts = getCurrentOptions(context, chunk)
++    val currentOpts = getCurrentOptions(compilerConfig, chunk)
+     val changeDetected = previousScalacOpts.isEmpty || previousScalacOpts.get != currentOpts
+ 
+     if (changeDetected) writeToCache(scalacOptsCacheFile, currentOpts)
+@@ -31,13 +34,13 @@ object CompilerOptionsStore {
+     changeDetected
+   }
+ 
+-  private def getCacheFileFor(context: CompileContext, moduleNames: Seq[String]): Path = {
++  private def getCacheFileFor(context: CompileContext, target: ModuleBuildTarget): Path = {
+     val dataPath = context.getProjectDescriptor.dataManager.getDataPaths.getTargetsDataRoot.toPath
+-    val scalacOptsDataFile = dataPath.resolve(cacheDir).resolve(moduleNames.head + moduleCacheFileSuffix)
++    val scalacOptsDataFile = dataPath.resolve(cacheDir).resolve(target.getPresentableName + moduleCacheFileSuffix)
+     scalacOptsDataFile
+   }
+ 
+-  private def getCurrentOptions(context: CompileContext, chunk: ModuleChunk): String = {
++  private def getCurrentOptions(compilerConfig: CompilerConfiguration, chunk: ModuleChunk): String = {
+     val target = chunk.representativeTarget
+     val module = target.getModule
+     val compilerSettings = SettingsManager.getProjectSettings(module.getProject).getCompilerSettings(chunk)
+@@ -45,8 +48,8 @@ object CompilerOptionsStore {
+     // The below items don't guarantee 100% correctness (we might skip Zinc compilation when in fact it was necessary)
+     // It's heuristic aimed at being accurate for the common usecases and not incuring too big of an overhead
+     // especially for small compilations
+-    val javaOpts = "javaOpts: " + CompilationData.javaOptionsFor(context, chunk).mkString(" ")
+-    val scalaOpts = "scalaOpts: " + CompilationData.scalaOptionsFor(compilerSettings, chunk).mkString(" ") +
++    val javaOpts = "javaOpts: " + compilerConfig.javacOpts.mkString(" ")
++    val scalaOpts = "scalaOpts: " + compilerConfig.scalacOps.mkString(" ") +
+       compilerSettings.getSbtIncrementalOptions.productIterator.mkString(" ") +
+       compilerSettings.getCompileOrder
+     val stringifiedOpts = Array(scalaOpts, javaOpts).mkString("\n")
+diff --git a/scala/compiler-shared/src/org/jetbrains/jps/incremental/scala/Client.scala b/scala/compiler-shared/src/org/jetbrains/jps/incremental/scala/Client.scala
+index fa6d50cf5d..f56872adba 100644
+--- a/scala/compiler-shared/src/org/jetbrains/jps/incremental/scala/Client.scala
++++ b/scala/compiler-shared/src/org/jetbrains/jps/incremental/scala/Client.scala
+@@ -28,8 +28,17 @@ trait Client {
+ 
+   def debug(text: String)
+ 
++  def startProcessingOutput(output: File)
++
+   def generated(source: File, module: File, name: String)
+ 
++  def allGenerated(generated: Seq[(File, Seq[(File, String)])]) = for {
++    (sourceFile, binaries) <- generated
++    (binaryFile, className) <- binaries
++  } this.generated(sourceFile, binaryFile, className)
++
++  def stopProcessingOutput(output: File)
++
+   def processed(source: File)
+ 
+   def deleted(module: File)
+diff --git a/scala/compiler-shared/src/org/jetbrains/jps/incremental/scala/DummyClient.scala b/scala/compiler-shared/src/org/jetbrains/jps/incremental/scala/DummyClient.scala
+index e461e0d38e..340b44866e 100644
+--- a/scala/compiler-shared/src/org/jetbrains/jps/incremental/scala/DummyClient.scala
++++ b/scala/compiler-shared/src/org/jetbrains/jps/incremental/scala/DummyClient.scala
+@@ -24,4 +24,8 @@ class DummyClient extends Client {
+   override def trace(exception: Throwable) {}
+ 
+   override def generated(source: File, module: File, name: String) {}
++
++  override def startProcessingOutput(output: File): Unit = {}
++
++  override def stopProcessingOutput(output: File): Unit = {}
+ }
+diff --git a/scala/compiler-shared/src/org/jetbrains/jps/incremental/scala/remote/ClientEventProcessor.scala b/scala/compiler-shared/src/org/jetbrains/jps/incremental/scala/remote/ClientEventProcessor.scala
+index f14237ff7a..5b6420e7f0 100644
+--- a/scala/compiler-shared/src/org/jetbrains/jps/incremental/scala/remote/ClientEventProcessor.scala
++++ b/scala/compiler-shared/src/org/jetbrains/jps/incremental/scala/remote/ClientEventProcessor.scala
+@@ -24,6 +24,15 @@ class ClientEventProcessor(client: Client) {
+       case GeneratedEvent(source, module, name) =>
+         client.generated(source, module, name)
+ 
++      case AllGeneratedEvent(generated) =>
++        client.allGenerated(generated)
++
++      case StartProcessingOutputEvent(output) =>
++        client.startProcessingOutput(output)
++
++      case StopProcessingOutputEvent(output) =>
++        client.stopProcessingOutput(output)
++
+       case DeletedEvent(module) =>
+         client.deleted(module)
+ 
+diff --git a/scala/compiler-shared/src/org/jetbrains/jps/incremental/scala/remote/Event.scala b/scala/compiler-shared/src/org/jetbrains/jps/incremental/scala/remote/Event.scala
+index 65186d7d1e..c3717754b0 100644
+--- a/scala/compiler-shared/src/org/jetbrains/jps/incremental/scala/remote/Event.scala
++++ b/scala/compiler-shared/src/org/jetbrains/jps/incremental/scala/remote/Event.scala
+@@ -48,6 +48,15 @@ case class TraceEvent(message: String, lines: Array[String]) extends Event
+ @SerialVersionUID(-3155152113364817122L)
+ case class GeneratedEvent(source: File, module: File, name: String) extends Event
+ 
++@SerialVersionUID(-3155152456364817122L)
++case class AllGeneratedEvent(generated: Seq[(File, Seq[(File, String)])]) extends Event
++
++@SerialVersionUID(-31551522345817122L)
++case class StartProcessingOutputEvent(output: File) extends Event
++
++@SerialVersionUID(-3665752113364817122L)
++case class StopProcessingOutputEvent(output: File) extends Event
++
+ @SerialVersionUID(-7935816100194567870L)
+ case class DeletedEvent(module: File) extends Event
+ 
+diff --git a/scala/compiler-shared/src/org/jetbrains/jps/incremental/scala/remote/Protocol.scala b/scala/compiler-shared/src/org/jetbrains/jps/incremental/scala/remote/Protocol.scala
+new file mode 100644
+index 0000000000..911eb8539c
+--- /dev/null
++++ b/scala/compiler-shared/src/org/jetbrains/jps/incremental/scala/remote/Protocol.scala
+@@ -0,0 +1,87 @@
++package org.jetbrains.jps.incremental.scala.remote
++
++
++import java.io._
++import java.util.Base64
++import java.util.zip.DeflaterOutputStream
++import java.util.zip.InflaterInputStream
++
++object Protocol {
++  private val argSeparator = "#ARG#"
++  private val emptyArg = "#STUB#"
++
++  def serializeArgs(args: Seq[String]): Array[Byte] = {
++    toBase64(compress(toBytes(mergeArgs(escapeEmptyArgs(args)))))
++  }
++
++  def deserializeArgs(data: Seq[String]): Seq[String] = {
++    val Seq(mergedEncodedArgs) = data
++    unescapeEmptyArgs(separateArgs(fromBytes(decompress(fromBase64(toBytes(mergedEncodedArgs))))))
++  }
++
++  def serializeEvent(event: Event, standalone: Boolean): Array[Byte] = {
++    adjustBase64(standalone, toBase64(compress(event.toBytes)))
++  }
++
++  def deserializeEvent(data: Array[Byte]): Event = {
++    Event.fromBytes(decompress(fromBase64(data)))
++  }
++
++  private def compress(bytes: Array[Byte]): Array[Byte] = {
++    val bytesStream = new ByteArrayOutputStream(bytes.length)
++    val deflaterStream = new DeflaterOutputStream(bytesStream)
++    deflaterStream.write(bytes)
++    deflaterStream.close()
++    bytesStream.toByteArray
++  }
++
++  private def decompress(bytes: Array[Byte]): Array[Byte] = {
++    val inflaterStream = new InflaterInputStream(new ByteArrayInputStream(bytes))
++    val byteStream = new ByteArrayOutputStream
++    var read = 0
++    val buffer = new Array[Byte](8192)
++    while ({ read = inflaterStream.read(buffer); read > 0 }) {
++      byteStream.write(buffer, 0, read)
++    }
++    inflaterStream.close()
++    byteStream.toByteArray
++  }
++
++  def toBytes(string: String): Array[Byte] = {
++    string.getBytes("UTF-8")
++  }
++
++  def fromBytes(bytes: Array[Byte]): String = {
++    new String(bytes, "UTF-8")
++  }
++
++  private def toBase64(bytes: Array[Byte]): Array[Byte] = {
++    Base64.getEncoder.encode(bytes)
++  }
++
++  private def fromBase64(encoded: Array[Byte]): Array[Byte] = {
++    Base64.getDecoder.decode(encoded)
++  }
++
++  private def escapeEmptyArgs(args: Seq[String]) = {
++    args.map(arg => if (arg.isEmpty) emptyArg else arg)
++  }
++  private def unescapeEmptyArgs(args: Seq[String]) = {
++    args.map(arg => if (arg == emptyArg) "" else arg)
++  }
++
++  private def mergeArgs(argsToMerge: Seq[String]) = {
++    argsToMerge.mkString(Protocol.argSeparator)
++  }
++
++  private def separateArgs(mergedArgs: String) = {
++    mergedArgs.split(Protocol.argSeparator).toSeq
++  }
++
++  private def adjustBase64(standalone: Boolean, bytes: Array[Byte]) = {
++    val string = fromBytes(bytes)
++    val adjusted = if (standalone && !string.endsWith("=")) string + "=" else string
++    toBytes(adjusted)
++  }
++
++}
+\ No newline at end of file
+diff --git a/scala/compiler-shared/src/org/jetbrains/jps/incremental/scala/remote/RemoteResourceOwner.scala b/scala/compiler-shared/src/org/jetbrains/jps/incremental/scala/remote/RemoteResourceOwner.scala
+index 3e90fb9c89..afc183ca18 100644
+--- a/scala/compiler-shared/src/org/jetbrains/jps/incremental/scala/remote/RemoteResourceOwner.scala
++++ b/scala/compiler-shared/src/org/jetbrains/jps/incremental/scala/remote/RemoteResourceOwner.scala
+@@ -1,49 +1,73 @@
+ package org.jetbrains.jps.incremental.scala.remote
+ 
+ import java.io._
+-import java.net.{InetAddress, Socket}
++import java.net.InetSocketAddress
++import java.net.{ InetAddress, Socket }
++import java.nio.channels.SocketChannel
++import java.util.concurrent.Semaphore
+ 
+-import com.intellij.util.Base64Converter
+ import com.martiansoftware.nailgun.NGConstants
+ import org.jetbrains.jps.incremental.messages.BuildMessage.Kind
+ import org.jetbrains.jps.incremental.scala._
+ 
++object RemoteResourceOwner {
++  val parallelResourcesLimitPropertyName = "org.jetbrains.jps.parallelResourcesLimit"
++  val defaultParallelResourcesLimit = 20
++  val parallelResourcesLimit = Option(System.getProperty(parallelResourcesLimitPropertyName))
++  private val socketSemaphore = new Semaphore(parallelResourcesLimit.fold(defaultParallelResourcesLimit)(_.toInt))
++
++  def withConstrainedResources(block: => Unit): Unit = {
++    socketSemaphore.acquire(1)
++    try block finally socketSemaphore.release(1)
++  }
++}
++
+ /**
+  * @author Pavel Fatin
+  * @author Dmitry Naydanov
+  */
+ trait RemoteResourceOwner {
++  import RemoteResourceOwner._
++
+   protected val address: InetAddress
+   protected val port: Int
+-  
++
+   protected val currentDirectory = System.getProperty("user.dir")
+   protected val serverAlias = "compile-server"
+ 
+-  def send(command: String, arguments: Seq[String], client: Client) {
+-    val encodedArgs = arguments.map(s => Base64Converter.encode(s.getBytes("UTF-8")))
+-    using(new Socket(address, port)) { socket =>
+-      using(new DataOutputStream(new BufferedOutputStream(socket.getOutputStream))) { output =>
+-        createChunks(command, encodedArgs).foreach(_.writeTo(output))
+-        output.flush()
+-        if (client != null) {
+-          using(new DataInputStream(new BufferedInputStream(socket.getInputStream))) { input =>
+-            handle(input, client)
++  def send(command: String, arguments: Seq[String], client: Client): Unit = {
++    val channel = SocketChannel.open(new InetSocketAddress(address, port))
++    withConstrainedResources {
++      using(channel.socket()) { socket =>
++        using(outputStream(socket)) { output =>
++          createChunks(command, arguments).foreach(_.writeTo(output))
++          output.flush()
++          if (client != null) {
++            using(inputStream(socket))(input => handle(input, client))
+           }
+         }
+       }
+     }
+   }
+ 
++  private def inputStream(socket: Socket) = {
++    new DataInputStream(new BufferedInputStream(socket.getInputStream))
++  }
++
++  private def outputStream(socket: Socket) = {
++    new DataOutputStream(new BufferedOutputStream(socket.getOutputStream))
++  }
++
+   protected def handle(input: DataInputStream, client: Client) {
+     val processor = new ClientEventProcessor(client)
+ 
+     while (!client.isCanceled) {
+       Chunk.readFrom(input) match {
+-        case Chunk(NGConstants.CHUNKTYPE_EXIT, code) =>
++        case Chunk(NGConstants.CHUNKTYPE_EXIT, _) =>
+           return
+         case Chunk(NGConstants.CHUNKTYPE_STDOUT, data) =>
+           try {
+-            val event = Event.fromBytes(Base64Converter.decode(data))
++            val event = Protocol.deserializeEvent(data)
+             processor.process(event)
+           } catch {
+             case e: Exception =>
+@@ -51,30 +75,29 @@ trait RemoteResourceOwner {
+                 val s = new String(data)
+                 if (s.length > 50) s.substring(0, 50) + "..." else s
+               }
+-              client.message(Kind.ERROR, "Unable to read an event from: " + chars)
++              client.error("Unable to read an event from: " + chars)
+               client.trace(e)
+           }
+         // Main server class redirects all (unexpected) stdout data to stderr.
+         // In theory, there should be no such data at all, however, in practice,
+         // sbt "leaks" some messages into console (e.g. for "explain type errors" option).
+-        // Report such output not as errors, but as warings (to continue make process).
++        // Report such output not as errors, but as warnings (to continue make process).
+         case Chunk(NGConstants.CHUNKTYPE_STDERR, data) =>
+-          client.message(Kind.WARNING, fromBytes(data))
++          client.warning(Protocol.fromBytes(data))
+         case Chunk(kind, data) =>
+-          client.message(Kind.ERROR, "Unexpected server output: " + data)
++          client.error("Unexpected server output: " + data)
+       }
+     }
+   }
+ 
+   protected def createChunks(command: String, args: Seq[String]): Seq[Chunk] = {
+-    args.map(s => Chunk(NGConstants.CHUNKTYPE_ARGUMENT.toChar, toBytes(s))) :+
+-      Chunk(NGConstants.CHUNKTYPE_WORKINGDIRECTORY.toChar, toBytes(currentDirectory)) :+
+-      Chunk(NGConstants.CHUNKTYPE_COMMAND.toChar, toBytes(command))
++    val serializedArgs = Protocol.serializeArgs(args)
++    val argsChunks = Chunk(NGConstants.CHUNKTYPE_ARGUMENT.toChar, serializedArgs)
++    val cwdChunk = Chunk(NGConstants.CHUNKTYPE_WORKINGDIRECTORY.toChar, Protocol.toBytes(currentDirectory))
++    val commandChunk = Chunk(NGConstants.CHUNKTYPE_COMMAND.toChar, Protocol.toBytes(command))
++    Seq(argsChunks, cwdChunk, commandChunk)
+   }
+ 
+-  private def toBytes(s: String) = s.getBytes
+-
+-  private def fromBytes(bytes: Array[Byte]) = new String(bytes)
+ }
+ 
+ case class Chunk(kind: Chunk.Kind, data: Array[Byte]) {
+diff --git a/scala/scala-impl/resources/META-INF/scala-plugin-common.xml b/scala/scala-impl/resources/META-INF/scala-plugin-common.xml
+index fa34ff5e51..f447ae5ed5 100644
+--- a/scala/scala-impl/resources/META-INF/scala-plugin-common.xml
++++ b/scala/scala-impl/resources/META-INF/scala-plugin-common.xml
+@@ -97,6 +97,8 @@
+                             serviceImplementation="org.jetbrains.plugins.scala.settings.ScalaApplicationSettings"/>
+         <applicationService serviceInterface="org.jetbrains.plugins.scala.settings.ScalaCodeFoldingSettings"
+                             serviceImplementation="org.jetbrains.plugins.scala.settings.ScalaCodeFoldingSettings"/>
++        <applicationService serviceInterface="org.jetbrains.plugins.scala.compiler.IncrementalityState"
++                            serviceImplementation="org.jetbrains.plugins.scala.compiler.IncrementalityState"/>
+         <projectService serviceInterface="org.jetbrains.plugins.scala.settings.ScalaProjectSettings"
+                         serviceImplementation="org.jetbrains.plugins.scala.settings.ScalaProjectSettings"/>
+         <errorHandler implementation="com.intellij.diagnostic.ITNReporter"/>
+@@ -1321,11 +1323,11 @@
+       <!-- end of scaladoc inspections -->
+ 
+       <!-- Util ammonite inspection -->
+-      <localInspection implementationClass="org.jetbrains.plugins.scala.worksheet.ammonite.AmmoniteUnresolvedLibraryInspection" 
+-                       displayName="Ammonite unresolved import" groupPath="Scala" shortName="AmmoniteUnresolvedLibraryInspection" 
++      <localInspection implementationClass="org.jetbrains.plugins.scala.worksheet.ammonite.AmmoniteUnresolvedLibraryInspection"
++                       displayName="Ammonite unresolved import" groupPath="Scala" shortName="AmmoniteUnresolvedLibraryInspection"
+                        level="WARNING" enabledByDefault="true" language="Scala" groupName="Other"/>
+       <!---->
+-      
++
+         <localInspection implementationClass="org.jetbrains.plugins.scala.codeInspection.specs2.BuiltinMatcherExistsInspection"
+                          displayName="Specs2 Matchers" shortName="Specs2Matchers" groupName="Specs2" groupPath="Scala,Specs2"
+                          level="WARNING" enabledByDefault="true" language="Scala" />
+@@ -1444,6 +1446,9 @@
+       <component>
+         <implementation-class>org.jetbrains.plugins.scala.worksheet.ammonite.AmmoniteScriptWrappersHolder</implementation-class>
+       </component>
++      <component>
++        <implementation-class>org.jetbrains.plugins.scala.compiler.IncrementalityChecker</implementation-class>
++      </component>
+     </project-components>
+ 
+     <actions>
+diff --git a/scala/scala-impl/src/org/jetbrains/plugins/scala/compiler/IncrementalityChecker.scala b/scala/scala-impl/src/org/jetbrains/plugins/scala/compiler/IncrementalityChecker.scala
+new file mode 100644
+index 0000000000..de23ea48cb
+--- /dev/null
++++ b/scala/scala-impl/src/org/jetbrains/plugins/scala/compiler/IncrementalityChecker.scala
+@@ -0,0 +1,49 @@
++package org.jetbrains.plugins.scala.compiler
++
++import com.intellij.openapi.compiler.{CompileContext, CompileTask, CompilerManager, CompilerMessageCategory}
++import com.intellij.openapi.components._
++import com.intellij.openapi.module.ModuleManager
++import com.intellij.openapi.project.Project
++import com.intellij.util.xmlb.XmlSerializerUtil
++import org.jetbrains.plugins.scala.project.IncrementalityType
++import org.jetbrains.plugins.scala.project.settings.ScalaCompilerConfiguration
++
++import scala.beans.BeanProperty
++
++@State(
++  name = "ScalaCompilerConfiguration",
++  storages = Array(new Storage("scala_incrementality.xml"))
++)
++class IncrementalityState extends PersistentStateComponent[IncrementalityState] {
++  override def loadState(state: IncrementalityState): Unit = XmlSerializerUtil.copyBean(state, this)
++
++  override def getState: IncrementalityState = this
++
++  @BeanProperty var lastIncrementalityType: String = _
++}
++
++class IncrementalityChecker(project: Project) extends AbstractProjectComponent(project) {
++  val errorMsg = "scala: type of incremental compiler has been changed, full rebuild is required"
++
++  private object Checker extends CompileTask {
++    override def execute(compileContext: CompileContext): Boolean = {
++      val currentType = ScalaCompilerConfiguration.instanceIn(project).incrementalityType
++      val state = ServiceManager.getService(project, classOf[IncrementalityState])
++      val previousType = Option(state.lastIncrementalityType).map(IncrementalityType.valueOf)
++
++      def isRebuild = !compileContext.isMake &&
++        compileContext.getCompileScope.getAffectedModules.toSet == ModuleManager.getInstance(project).getModules.toSet
++
++      if (previousType.exists(_ != currentType) && !isRebuild) {
++        compileContext.addMessage(CompilerMessageCategory.ERROR, errorMsg, null, -1, -1)
++        false
++      } else {
++        state.lastIncrementalityType = currentType.getName
++        true
++      }
++    }
++  }
++
++  override def projectOpened(): Unit =
++    CompilerManager.getInstance(project).addBeforeTask(Checker)
++}
+diff --git a/scala/scala-impl/src/org/jetbrains/plugins/scala/compiler/RemoteServerConnectorBase.scala b/scala/scala-impl/src/org/jetbrains/plugins/scala/compiler/RemoteServerConnectorBase.scala
+index 78e886c5ab..d5e95f521e 100644
+--- a/scala/scala-impl/src/org/jetbrains/plugins/scala/compiler/RemoteServerConnectorBase.scala
++++ b/scala/scala-impl/src/org/jetbrains/plugins/scala/compiler/RemoteServerConnectorBase.scala
+@@ -100,7 +100,9 @@ abstract class RemoteServerConnectorBase(module: Module, filesToCompile: Seq[Fil
+     worksheetArgs,
+     "", //allSources, used in zinc only
+     "0", //timestamp, used in zinc only
+-    "false" //isCompile
++    "false", //isCompile
++    Array.empty[String], //ignoredScalacOptions
++    "false" //isToJar
+   )
+   
+   protected def configurationError(message: String) = throw new IllegalArgumentException(message)
+diff --git a/scala/scala-impl/src/org/jetbrains/plugins/scala/components/libinjection/InjectorServerConnector.scala b/scala/scala-impl/src/org/jetbrains/plugins/scala/components/libinjection/InjectorServerConnector.scala
+index 02d1821cd1..8e425da460 100644
+--- a/scala/scala-impl/src/org/jetbrains/plugins/scala/components/libinjection/InjectorServerConnector.scala
++++ b/scala/scala-impl/src/org/jetbrains/plugins/scala/components/libinjection/InjectorServerConnector.scala
+@@ -5,16 +5,16 @@ import java.io.File
+ import com.intellij.openapi.module.Module
+ import org.jetbrains.jps.incremental.messages.BuildMessage.Kind
+ import org.jetbrains.jps.incremental.scala.Client
+-import org.jetbrains.plugins.scala.compiler.{RemoteServerConnectorBase, RemoteServerRunner}
++import org.jetbrains.plugins.scala.compiler.{ RemoteServerConnectorBase, RemoteServerRunner }
+ 
+ import scala.annotation.tailrec
+ import scala.collection.mutable.ListBuffer
+ 
+ /**
+-  * Created by mucianm on 18.03.16.
+-  */
++ * Created by mucianm on 18.03.16.
++ */
+ class InjectorServerConnector(module: Module, filesToCompile: Seq[File], outputDir: File, val platformClasspath: Seq[File])
+-extends RemoteServerConnectorBase(module, filesToCompile, outputDir) {
++  extends RemoteServerConnectorBase(module, filesToCompile, outputDir) {
+   override val additionalCp: Seq[File] = platformClasspath
+ 
+   val errors = ListBuffer[String]()
+@@ -30,6 +30,8 @@ extends RemoteServerConnectorBase(module, filesToCompile, outputDir) {
+     override def processed(source: File): Unit = {}
+     override def trace(exception: Throwable): Unit = {}
+     override def generated(source: File, module: File, name: String): Unit = {}
++    override def startProcessingOutput(output: File): Unit = {}
++    override def stopProcessingOutput(output: File): Unit = {}
+   }
+ 
+   @tailrec
+diff --git a/scala/scala-impl/src/org/jetbrains/plugins/scala/debugger/evaluation/ScalaEvaluatorCompileHelper.scala b/scala/scala-impl/src/org/jetbrains/plugins/scala/debugger/evaluation/ScalaEvaluatorCompileHelper.scala
+index 2f16b4effc..77d9a9621d 100644
+--- a/scala/scala-impl/src/org/jetbrains/plugins/scala/debugger/evaluation/ScalaEvaluatorCompileHelper.scala
++++ b/scala/scala-impl/src/org/jetbrains/plugins/scala/debugger/evaluation/ScalaEvaluatorCompileHelper.scala
+@@ -120,6 +120,8 @@ private class ServerConnector(module: Module, filesToCompile: Seq[File], outputD
+     override def processed(source: File): Unit = {}
+     override def trace(exception: Throwable): Unit = {}
+     override def generated(source: File, module: File, name: String): Unit = {}
++    override def startProcessingOutput(output: File): Unit = {}
++    override def stopProcessingOutput(output: File): Unit = {}
+   }
+ 
+   @tailrec
+diff --git a/scala/scala-impl/src/org/jetbrains/plugins/scala/worksheet/server/RemoteServerConnector.scala b/scala/scala-impl/src/org/jetbrains/plugins/scala/worksheet/server/RemoteServerConnector.scala
+index 9042a24a0e..5c5ae18df3 100644
+--- a/scala/scala-impl/src/org/jetbrains/plugins/scala/worksheet/server/RemoteServerConnector.scala
++++ b/scala/scala-impl/src/org/jetbrains/plugins/scala/worksheet/server/RemoteServerConnector.scala
+@@ -6,47 +6,46 @@ import java.net._
+ 
+ import com.intellij.compiler.CompilerMessageImpl
+ import com.intellij.compiler.progress.CompilerTask
+-import com.intellij.notification.{Notification, NotificationType, Notifications}
+-import com.intellij.openapi.compiler.{CompilerMessageCategory, CompilerPaths}
++import com.intellij.notification.{ Notification, NotificationType, Notifications }
++import com.intellij.openapi.compiler.{ CompilerMessageCategory, CompilerPaths }
+ import com.intellij.openapi.module.Module
+-import com.intellij.openapi.progress.{ProgressIndicator, ProgressManager}
++import com.intellij.openapi.progress.{ ProgressIndicator, ProgressManager }
+ import com.intellij.openapi.project.Project
+ import com.intellij.openapi.roots.ModuleRootManager
+ import com.intellij.openapi.vfs.VirtualFile
+ import com.intellij.psi.PsiManager
+-import com.intellij.util.Base64Converter
+ import org.jetbrains.jps.incremental.ModuleLevelBuilder.ExitCode
+ import org.jetbrains.jps.incremental.messages.BuildMessage
+ import org.jetbrains.jps.incremental.messages.BuildMessage.Kind
+ import org.jetbrains.jps.incremental.scala.DummyClient
+ import org.jetbrains.jps.incremental.scala.remote._
+-import org.jetbrains.plugins.scala.compiler.{ErrorHandler, NonServerRunner, RemoteServerConnectorBase, RemoteServerRunner}
++import org.jetbrains.plugins.scala.compiler.{ ErrorHandler, NonServerRunner, RemoteServerConnectorBase, RemoteServerRunner }
+ import org.jetbrains.plugins.scala.lang.psi.api.ScalaFile
+ import worksheet.actions.WorksheetFileHook
+-import worksheet.processor.{WorksheetCompiler, WorksheetSourceProcessor}
++import worksheet.processor.{ WorksheetCompiler, WorksheetSourceProcessor }
+ import worksheet.runconfiguration.ReplModeArgs
+-import worksheet.server.RemoteServerConnector.{MyTranslatingClient, OuterCompilerInterface}
+-import worksheet.ui.{WorksheetEditorPrinterBase, WorksheetIncrementalEditorPrinter}
++import worksheet.server.RemoteServerConnector.{ MyTranslatingClient, OuterCompilerInterface }
++import worksheet.ui.{ WorksheetEditorPrinterBase, WorksheetIncrementalEditorPrinter }
+ 
+ /**
+-  * User: Dmitry Naydanov
++ * User: Dmitry Naydanov
+  * Date: 1/28/14
+  */
+-class RemoteServerConnector(module: Module, worksheet: File, output: File, worksheetClassName: String, 
++class RemoteServerConnector(module: Module, worksheet: File, output: File, worksheetClassName: String,
+   replArgs: Option[ReplModeArgs], needsCheck: Boolean) extends RemoteServerConnectorBase(module: Module, Seq(worksheet), output, needsCheck) {
+ 
+   val runType: WorksheetMakeType = WorksheetCompiler.getRunType(module.getProject)
+ 
+   /**
+-    * Args (for running in compile server process only)
+-    * 0. Compiled class name to execute 
+-    * 1. Path to runners.jar (needed to load MacroPrinter for types)
+-    * 2. Output - path to temp file, where processed worksheet code is written
+-    * 3. Output dir for compiled worksheet (i.e. for compiled temp file with processed code)
+-    * 4. Original worksheet file path. Used as id of REPL session on compile server (iff REPL enabled)
+-    * 5. Code chunk to interpret (iff REPL enabled)
+-    * 6. "replenabled" - iff/if REPL mode enabled
+-    */
++   * Args (for running in compile server process only)
++   * 0. Compiled class name to execute
++   * 1. Path to runners.jar (needed to load MacroPrinter for types)
++   * 2. Output - path to temp file, where processed worksheet code is written
++   * 3. Output dir for compiled worksheet (i.e. for compiled temp file with processed code)
++   * 4. Original worksheet file path. Used as id of REPL session on compile server (iff REPL enabled)
++   * 5. Code chunk to interpret (iff REPL enabled)
++   * 6. "replenabled" - iff/if REPL mode enabled
++   */
+   override val worksheetArgs: Array[String] =
+     if (runType != OutOfProcessServer) {
+       val base = Array(worksheetClassName, runnersJar.getAbsolutePath, output.getAbsolutePath) ++ outputDirs
+@@ -63,32 +62,26 @@ class RemoteServerConnector(module: Module, worksheet: File, output: File, works
+     try {
+       val worksheetProcess = runType match {
+         case InProcessServer | OutOfProcessServer =>
+-           new RemoteServerRunner(project).buildProcess(arguments, client)
++          new RemoteServerRunner(project).buildProcess(arguments, client)
+         case NonServer =>
+           val eventClient = new ClientEventProcessor(client)
+-          
+-          val encodedArgs = arguments map {
+-            case "" => Base64Converter.encode("#STUB#" getBytes "UTF-8")
+-            case s => Base64Converter.encode(s getBytes "UTF-8")
+-          }
+-
+           val errorHandler = new ErrorHandler {
+             override def error(message: String): Unit = Notifications.Bus notify {
+               new Notification(
+                 "Scala Worksheet",
+                 "Cannot run worksheet",
+-                s"<html><body>${message.replace("\n", "<br>")}</body></html>",
++                s"<html><body>${ message.replace("\n", "<br>") }</body></html>",
+                 NotificationType.ERROR
+               )
+             }
+           }
+-
++          val encodedArgs = Seq(Protocol.fromBytes(Protocol.serializeArgs(arguments)))
+           new NonServerRunner(project, Some(errorHandler)).buildProcess(encodedArgs, (text: String) => {
+-            val event = Event.fromBytes(Base64Converter.decode(text.getBytes("UTF-8")))
++            val event = Protocol.deserializeEvent(Protocol.toBytes(text))
+             eventClient.process(event)
+           })
+       }
+-      
++
+       if (worksheetProcess == null) return ExitCode.ABORT
+ 
+       val fileToReHighlight = extensions.inReadAction(PsiManager getInstance project findFile originalFile) match {
+@@ -99,18 +92,18 @@ class RemoteServerConnector(module: Module, worksheet: File, output: File, works
+       worksheetHook.disableRun(originalFile, Some(worksheetProcess))
+       worksheetProcess.addTerminationCallback({
+         worksheetHook.enableRun(originalFile, client.isCompiledWithErrors)
+-        fileToReHighlight foreach  WorksheetIncrementalEditorPrinter.rehighlight
++        fileToReHighlight foreach WorksheetIncrementalEditorPrinter.rehighlight
+       })
+ 
+       WorksheetProcessManager.add(originalFile, worksheetProcess)
+ 
+       worksheetProcess.run()
+-      
++
+       ExitCode.OK
+     } catch {
+       case _: SocketException =>
+         ExitCode.OK // someone has stopped the server
+-    } 
++    }
+   }
+ 
+   private def outputDirs = (ModuleRootManager.getInstance(module).getDependencies :+ module).map(
+@@ -120,11 +113,11 @@ class RemoteServerConnector(module: Module, worksheet: File, output: File, works
+ object RemoteServerConnector {
+   class MyTranslatingClient(callback: Runnable, project: Project, worksheet: VirtualFile, consumer: OuterCompilerInterface) extends DummyClient {
+     private val length = WorksheetSourceProcessor.END_GENERATED_MARKER.length
+-    
++
+     private var hasErrors = false
+ 
+     def isCompiledWithErrors: Boolean = hasErrors
+-    
++
+     override def progress(text: String, done: Option[Float]) {
+       consumer.progress(text, done)
+     }
+@@ -141,10 +134,10 @@ object RemoteServerConnector {
+         val i = lines(linesLength - 2) indexOf WorksheetSourceProcessor.END_GENERATED_MARKER
+         if (i > -1) i + length else 0
+       } else 0
+-      
++
+       val finalText = if (differ == 0) text else {
+         val buffer = new StringBuilder
+-        
++
+         for (j <- 0 until (linesLength - 2)) buffer append lines(j) append "\n"
+ 
+         val lines1 = lines(linesLength - 1)
+@@ -153,7 +146,7 @@ object RemoteServerConnector {
+           if (lines1.length > differ) lines1.substring(differ) else lines1) append "\n"
+         buffer.toString()
+       }
+-      
++
+       val line1 = line.map(i => i - 4).map(_.toInt)
+       val column1 = column.map(_ + 1 - differ).map(_.toInt)
+ 
+@@ -170,7 +163,7 @@ object RemoteServerConnector {
+         case WARNING =>
+           CompilerMessageCategory.WARNING
+       }
+-      
++
+       consumer.message(
+         new CompilerMessageImpl(project, category, finalText, worksheet, line1 getOrElse -1, column1 getOrElse -1, null)
+       )
+@@ -184,21 +177,21 @@ object RemoteServerConnector {
+       consumer.worksheetOutput(text)
+     }
+   }
+-  
++
+   trait OuterCompilerInterface {
+     def message(message: CompilerMessageImpl)
+     def progress(text: String, done: Option[Float])
+-    
++
+     def worksheetOutput(text: String)
+     def trace(thr: Throwable)
+   }
+-  
++
+   class CompilerInterfaceImpl(task: CompilerTask, worksheetPrinter: WorksheetEditorPrinterBase,
+                               indicator: Option[ProgressIndicator], auto: Boolean = false) extends OuterCompilerInterface {
+     override def progress(text: String, done: Option[Float]) {
+       if (auto) return
+       val taskIndicator = ProgressManager.getInstance().getProgressIndicator
+-      
++
+       if (taskIndicator != null) {
+         taskIndicator setText text
+         done foreach (d => taskIndicator.setFraction(d.toDouble))
