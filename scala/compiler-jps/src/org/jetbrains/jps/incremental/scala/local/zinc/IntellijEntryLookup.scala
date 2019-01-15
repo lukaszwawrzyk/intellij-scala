@@ -1,6 +1,8 @@
 package org.jetbrains.jps.incremental.scala.local.zinc
 
 import java.io.File
+import java.io.PrintWriter
+import java.io.StringWriter
 import java.util.Optional
 
 import org.jetbrains.jps.incremental.scala.data.CompilationData

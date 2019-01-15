@@ -1,22 +1,29 @@
 package org.jetbrains.jps.incremental.scala
 package data
 
-import java.io.{File, IOException}
+import java.io.{ File, IOException }
 import java.util
 import java.util.Collections
 
-import org.jetbrains.jps.builders.java.{JavaBuilderUtil, JavaModuleBuildTargetType}
+import com.intellij.compiler.CompilerConfiguration
+import org.jetbrains.jps.builders.java.{ JavaBuilderUtil, JavaModuleBuildTargetType }
 import org.jetbrains.jps.incremental.java.JavaBuilder
-import org.jetbrains.jps.incremental.scala.model.{CompileOrder, CompilerSettings}
-import org.jetbrains.jps.incremental.{CompileContext, ModuleBuildTarget}
+import org.jetbrains.jps.incremental.scala.model.{ CompileOrder, CompilerSettings }
+import org.jetbrains.jps.incremental.{ CompileContext, ModuleBuildTarget }
 import org.jetbrains.jps.model.java.JpsJavaExtensionService
 import org.jetbrains.jps.model.java.compiler.JpsJavaCompilerOptions
-import org.jetbrains.jps.{ModuleChunk, ProjectPaths}
+import org.jetbrains.jps.{ ModuleChunk, ProjectPaths }
 import org.jetbrains.jps.model.module.JpsModule
 
 import scala.collection.JavaConverters._
 
-case class ZincData(allSources: Seq[File], compilationStartDate: Long, isCompile: Boolean)
+case class ZincData(
+  allSources: Seq[File],
+  compilationStartDate: Long,
+  isCompile: Boolean,
+  ignoredScalacOptions: Seq[String] = Seq.empty,
+  isToJar: Boolean = false
+)
 
 /**
  * @author Pavel Fatin
@@ -42,9 +49,14 @@ object CompilationData extends BaseCompilationData {
 abstract class BaseCompilationData extends CompilationDataFactory {
   private val compilationStamp = System.nanoTime()
 
-  override def from(sources: Seq[File], allSources: Seq[File], context: CompileContext, chunk: ModuleChunk): Either[String, CompilationData] = {
+  override def from(
+    sources: Seq[File],
+    allSources: Seq[File],
+    context: CompileContext,
+    chunk: ModuleChunk,
+    compilerConfiguration: CompilerConfiguration
+  ): Either[String, CompilationData] = {
     val target = chunk.representativeTarget
-    val module = target.getModule
 
     outputsNotSpecified(chunk) match {
       case Some(message) => return Left(message)
@@ -54,9 +66,6 @@ abstract class BaseCompilationData extends CompilationDataFactory {
     checkOrCreate(output)
 
     val classpath = ProjectPaths.getCompilationClasspathFiles(chunk, chunk.containsTests, false, true).asScala.toSeq
-    val compilerSettings = SettingsManager.getProjectSettings(module.getProject).getCompilerSettings(chunk)
-    val scalaOptions = scalaOptionsFor(compilerSettings, chunk)
-    val order = compilerSettings.getCompileOrder
 
     createOutputToCacheMap(context).map { outputToCacheMap =>
 
@@ -69,18 +78,10 @@ abstract class BaseCompilationData extends CompilationDataFactory {
         throw new RuntimeException(message)
       })
 
-      val relevantOutputToCacheMap = (outputToCacheMap - output).filter(p => classpath.contains(p._1))
-
-      val commonOptions = {
-        val encoding = context.getProjectDescriptor.getEncodingConfiguration.getPreferredModuleChunkEncoding(chunk)
-        Option(encoding).map(Seq("-encoding", _)).getOrElse(Seq.empty)
-      }
-
-      val javaOptions = javaOptionsFor(context, chunk)
+      val classpathSet = classpath.toSet
+      val relevantOutputToCacheMap = (outputToCacheMap - output).filter(p => classpathSet.contains(p._1))
 
       val outputGroups = createOutputGroups(chunk)
-
-      val canonicalSources = sources.map(_.getCanonicalFile)
 
       val isCompile =
         !JavaBuilderUtil.isCompileJavaIncrementally(context) &&
@@ -88,9 +89,10 @@ abstract class BaseCompilationData extends CompilationDataFactory {
 
       val additionalOptions = extraOptions(target, context, module, outputGroups)
 
-      CompilationData(canonicalSources, classpath, output, commonOptions ++ scalaOptions ++ additionalOptions, commonOptions ++ javaOptions,
-        order, cacheFile, relevantOutputToCacheMap, outputGroups,
-        ZincData(allSources, compilationStamp, isCompile))
+      val zincData = ZincDataService.transform(ZincData(allSources, compilationStamp, isCompile))
+      CompilationData(sources, classpath, output,
+        compilerConfiguration.scalacOps, compilerConfiguration.javacOpts,
+        compilerConfiguration.order, cacheFile, relevantOutputToCacheMap, outputGroups, zincData)
     }
   }
 
@@ -169,10 +171,8 @@ abstract class BaseCompilationData extends CompilationDataFactory {
 
       for ((target, output) <- targetToOutput.toMap)
         yield (
-          output.getCanonicalFile,
-          new File(
-            paths.getTargetDataRoot(target).getCanonicalFile,
-            s"cache-${target.getPresentableName}.zip")
+          output,
+          new File(output, s"cache-${target.getPresentableName}.zip")
         )
     }
   }

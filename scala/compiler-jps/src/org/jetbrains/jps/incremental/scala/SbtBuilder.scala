@@ -4,22 +4,25 @@ import _root_.java.util
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.io.FileUtil
 import org.jetbrains.jps.ModuleChunk
 import org.jetbrains.jps.builders.java._
-import org.jetbrains.jps.builders.{BuildRootDescriptor, BuildTarget}
+import org.jetbrains.jps.builders.{ BuildRootDescriptor, BuildTarget }
 import org.jetbrains.jps.incremental.ModuleLevelBuilder.ExitCode
 import org.jetbrains.jps.incremental._
 import org.jetbrains.jps.incremental.java.JavaBuilder
-import org.jetbrains.jps.incremental.messages.ProgressMessage
+import org.jetbrains.jps.incremental.messages.{ BuildMessage, CompilerMessage, ProgressMessage }
 import org.jetbrains.jps.incremental.scala.InitialScalaBuilder.isScalaProject
 import org.jetbrains.jps.incremental.scala.SbtBuilder._
 import org.jetbrains.jps.incremental.scala.ScalaBuilder._
+import org.jetbrains.jps.incremental.scala.data.CompilerConfiguration
 import org.jetbrains.jps.incremental.scala.local.IdeClientSbt
 import org.jetbrains.jps.incremental.scala.model.IncrementalityType
-import org.jetbrains.jps.incremental.scala.sbtzinc.{CompilerOptionsStore, ModulesFedToZincStore}
+import org.jetbrains.jps.incremental.scala.sbtzinc.{ CompilerOptionsStore, ModulesFedToZincStore }
 import org.jetbrains.jps.incremental.scala.sources.SharedSourcesModuleType
+import org.jetbrains.jps.model.JpsProject
 import org.jetbrains.jps.model.module.JpsModule
 
 import _root_.scala.collection.JavaConverters._
@@ -29,12 +32,19 @@ import _root_.scala.collection.mutable
  * @author Pavel Fatin
  */
 class SbtBuilder extends ModuleLevelBuilder(BuilderCategory.TRANSLATOR) {
+  private final val LOG: Logger = Logger.getInstance("#org.jetbrains.jps.incremental.scala")
+  val shouldSkipCompilation: Key[Boolean] = Key.create("_java_compiler_enabled_")
+
   override def getPresentableName = "Scala sbt builder"
 
-  override def buildStarted(context: CompileContext): Unit = {
-    if (isScalaProject(context) && !isDisabled(context)) {
-      JavaBuilder.IS_ENABLED.set(context, false)
-    }
+  override def chunkBuildStarted(context: CompileContext, chunk: ModuleChunk): Unit = {
+    val project: JpsProject = context.getProjectDescriptor.getProject
+    if (isScalaProject(project) && !isDisabled(context))
+      if (isScalaProject(project) && !isDisabled(context) && hasScalaModules(chunk)) {
+        LOG.debug("Java builder is disabled by sbtbuilder")
+        JavaBuilder.IS_ENABLED.set(context, false)
+        shouldSkipCompilation.set(context, false)
+      } else shouldSkipCompilation.set(context, true)
   }
 
   override def build(context: CompileContext,
@@ -53,8 +63,14 @@ class SbtBuilder extends ModuleLevelBuilder(BuilderCategory.TRANSLATOR) {
       }
     }
 
-    if (isDisabled(context) || ChunkExclusionService.isExcluded(chunk))
+    if (isDisabled(context) || ChunkExclusionService.isExcluded(chunk)) return ExitCode.NOTHING_DONE
+    else if (shouldSkipCompilation.get(context)) {
+      val message = s"skipping Scala files without a Scala SDK in module(s) ${ chunk.getPresentableShortName } in sbtbuilder"
+      context.processMessage(new CompilerMessage("scala", BuildMessage.Kind.WARNING, message))
       return ExitCode.NOTHING_DONE
+
+      checkIncrementalTypeChange(context)
+    }
 
     updateSharedResources(context, chunk)
 
@@ -65,40 +81,42 @@ class SbtBuilder extends ModuleLevelBuilder(BuilderCategory.TRANSLATOR) {
 
     val moduleNames = modules.map(_.getName).toSeq
 
-    val compilerOptionsChanged = CompilerOptionsStore.updateCompilerOptionsCache(context, chunk, moduleNames)
+    CompilerConfiguration.withConfig(context, chunk) { compilerConfig =>
+      val compilerOptionsChanged = CompilerOptionsStore.updateCompilerOptionsCache(context, chunk, moduleNames, compilerConfig)
 
-    if (dirtyFilesFromIntellij.isEmpty &&
-      !ModulesFedToZincStore.checkIfAnyModuleDependencyWasFedToZinc(context, chunk) &&
-      !compilerOptionsChanged
-    ) {
-      return ExitCode.NOTHING_DONE
-    }
+      if (dirtyFilesFromIntellij.isEmpty &&
+        !dirtyFilesHolder.hasRemovedFiles &&
+        !ModulesFedToZincStore.checkIfAnyModuleDependencyWasFedToZinc(context, chunk) &&
+        !compilerOptionsChanged
+      ) {
+        return ExitCode.NOTHING_DONE
+      }
 
+      val sourceToBuildTarget = collectCompilableFiles(context, chunk)
+      if (sourceToBuildTarget.isEmpty)
+        return ExitCode.NOTHING_DONE
 
-    val sourceToBuildTarget = collectCompilableFiles(context, chunk)
-    if (sourceToBuildTarget.isEmpty)
-      return ExitCode.NOTHING_DONE
+      val allSources = sourceToBuildTarget.keySet.toSeq
 
-    val allSources = sourceToBuildTarget.keySet.toSeq
+      val client = new IdeClientSbt("scala", context, moduleNames, outputConsumer, sourceToBuildTarget.get)
 
-    val client = new IdeClientSbt("scala", context, moduleNames, outputConsumer, sourceToBuildTarget.get)
+      logCustomSbtIncOptions(context, chunk, client)
 
-    logCustomSbtIncOptions(context, chunk, client)
+      // assume Zinc will be used after we reach this point
+      ModulesFedToZincStore.add(context, moduleNames)
 
-    // assume Zinc will be used after we reach this point
-    ModulesFedToZincStore.add(context, moduleNames)
-
-    compile(context, chunk, dirtyFilesFromIntellij, allSources, modules, client) match {
-      case Left(error) =>
-        client.error(error)
-        ExitCode.ABORT
-      case Right(code) =>
-        if (client.hasReportedErrors || client.isCanceled) {
+      compile(context, chunk, compilerConfig, dirtyFilesFromIntellij, allSources, modules, client) match {
+        case Left(error) =>
+          client.error(error)
           ExitCode.ABORT
-        } else {
-          client.progress("Compilation completed", Some(1.0F))
-          code
-        }
+        case Right(code) =>
+          if (client.hasReportedErrors || client.isCanceled) {
+            ExitCode.ABORT
+          } else {
+            client.progress("Compilation completed", Some(1.0F))
+            code
+          }
+      }
     }
   }
 

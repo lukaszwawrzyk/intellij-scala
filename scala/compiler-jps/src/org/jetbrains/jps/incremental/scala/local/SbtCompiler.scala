@@ -3,12 +3,13 @@ package local
 
 import java.io.File
 import java.util.Optional
+import java.util.jar.JarFile
 
 import scala.util.Try
 
 import org.jetbrains.jps.incremental.scala.data.CompilationData
 import org.jetbrains.jps.incremental.scala.local.zinc.Utils._
-import org.jetbrains.jps.incremental.scala.local.zinc.{BinaryToSource, _}
+import org.jetbrains.jps.incremental.scala.local.zinc.{ BinaryToSource, _ }
 import org.jetbrains.jps.incremental.scala.model.CompileOrder
 import sbt.internal.inc._
 import xsbti.compile._
@@ -24,7 +25,6 @@ class SbtCompiler(javaTools: JavaTools, optScalac: Option[ScalaCompiler], fileTo
   }
 
   private def doCompile(compilationData: CompilationData, client: Client, scalac: ScalaCompiler): Unit = {
-    val startTime = System.currentTimeMillis()
     client.progress("Loading cached results...")
 
     val incrementalCompiler = new IncrementalCompilerImpl
@@ -36,7 +36,7 @@ class SbtCompiler(javaTools: JavaTools, optScalac: Option[ScalaCompiler], fileTo
     }
 
     val analysisStore = fileToStore(compilationData.cacheFile)
-    val zincMetadata = CompilationMetadata.load(analysisStore, client, compilationData)
+    val zincMetadata = CompilationMetadata.load(analysisStore, client, compilationData, scalac.scalaInstance().version())
     import zincMetadata._
 
     client.progress("Searching for changed files...")
@@ -52,8 +52,10 @@ class SbtCompiler(javaTools: JavaTools, optScalac: Option[ScalaCompiler], fileTo
 
     val incOptions = IncOptions.of()
       .withExternalHooks(IntelljExternalHooks(intellijLookup, intellijClassfileManager))
+      .withStoreApis(true)
       .withRecompileOnMacroDef(Optional.of(false))
       .withTransitiveStep(5) // Default 3 was not enough for us
+      .withIgnoredScalacOptions(compilationData.zincData.ignoredScalacOptions.toArray)
 
     val cs = incrementalCompiler.compilers(javaTools, scalac)
     val setup = incrementalCompiler.setup(
@@ -66,10 +68,15 @@ class SbtCompiler(javaTools: JavaTools, optScalac: Option[ScalaCompiler], fileTo
       Option(progress),
       Array.empty)
     val previousResult = PreviousResult.create(Optional.of(previousAnalysis), previousSetup.toOptional)
+
+    val finalOutput = if (compilationData.zincData.isToJar) {
+      new File(compilationData.output.getParentFile, compilationData.output.getName + ".jar")
+    } else compilationData.output
+
     val inputs = incrementalCompiler.inputs(
       compilationData.classpath.toArray,
       compilationData.zincData.allSources.toArray,
-      compilationData.output,
+      finalOutput,
       compilationData.scalaOptions.toArray,
       compilationData.javaOptions.toArray,
       100,
@@ -91,15 +98,26 @@ class SbtCompiler(javaTools: JavaTools, optScalac: Option[ScalaCompiler], fileTo
 
         val binaryToSource = BinaryToSource(result.analysis, compilationData)
 
-        def processGeneratedFile(classFile: File): Unit = {
-          for (source <- binaryToSource.classfileToSources(classFile))
-            client.generated(source, classFile, binaryToSource.className(classFile))
-        }
+        client.startProcessingOutput(finalOutput)
 
-        intellijClassfileManager.generatedDuringCompilation().flatten.foreach(processGeneratedFile)
+        val importedBinaries = if (cacheDetails.isCached) previousAnalysis.asInstanceOf[Analysis].stamps.allProducts else Nil
+        val generatedClassFiles = intellijClassfileManager.generatedDuringCompilation().flatten
+        val allClassFiles = importedBinaries ++ generatedClassFiles
 
-        if (cacheDetails.isCached)
-          previousAnalysis.asInstanceOf[Analysis].stamps.allProducts.foreach(processGeneratedFile)
+        def sourceForBinary(binary: File): Option[File] =
+          binaryToSource.classfileToSources(binary).headOption
+
+        def addClassNames(classFiles: Iterable[File]): Seq[(File, String)] =
+          classFiles.map(cf => (cf, binaryToSource.className(cf))).toVector
+
+        val allGenerated = allClassFiles
+          .groupBy(sourceForBinary)
+          .collect { case (Some(source), classFiles) => source -> addClassNames(classFiles) }
+          .toVector
+
+        client.allGenerated(allGenerated)
+
+        client.stopProcessingOutput(finalOutput)
       }
       result
     }
@@ -116,13 +134,13 @@ class SbtCompiler(javaTools: JavaTools, optScalac: Option[ScalaCompiler], fileTo
         sourcesForInvalidation.foreach(source => client.sourceStarted(source.getAbsolutePath))
       case e: Throwable =>
         // Invalidate analysis
-        previousSetup.foreach(previous => analysisStore.set( AnalysisContents.create(Analysis.empty, previous)))
+        previousSetup.foreach(previous => analysisStore.set(AnalysisContents.create(Analysis.empty, previous)))
 
         // Keep files dirty
         compilationData.zincData.allSources.foreach(source => client.sourceStarted(source.getAbsolutePath))
 
         val msg =
-          s"""Compilation faild when compiling to: ${compilationData.output}
+          s"""Compilation failed when compiling to: ${compilationData.output}
               |  ${e.getMessage}
               |  ${e.getStackTrace.mkString("\n  ")}
           """.stripMargin

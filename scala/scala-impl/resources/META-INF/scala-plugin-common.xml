@@ -116,6 +116,8 @@
                             serviceImplementation="org.jetbrains.plugins.scala.settings.ScalaApplicationSettings"/>
         <applicationService serviceInterface="org.jetbrains.plugins.scala.settings.ScalaCodeFoldingSettings"
                             serviceImplementation="org.jetbrains.plugins.scala.settings.ScalaCodeFoldingSettings"/>
+        <applicationService serviceInterface="org.jetbrains.plugins.scala.compiler.IncrementalityState"
+                            serviceImplementation="org.jetbrains.plugins.scala.compiler.IncrementalityState"/>
         <projectService serviceInterface="org.jetbrains.plugins.scala.settings.ScalaProjectSettings"
                         serviceImplementation="org.jetbrains.plugins.scala.settings.ScalaProjectSettings"/>
         <errorHandler implementation="com.intellij.diagnostic.ITNReporter"/>
@@ -1572,6 +1574,9 @@
       </component>
       <component>
         <implementation-class>org.jetbrains.plugins.scala.lang.formatting.ScalaFmtSuggesterComponent</implementation-class>
+      </component>
+      <component>
+        <implementation-class>org.jetbrains.plugins.scala.compiler.IncrementalityChecker</implementation-class>
       </component>
     </project-components>
 

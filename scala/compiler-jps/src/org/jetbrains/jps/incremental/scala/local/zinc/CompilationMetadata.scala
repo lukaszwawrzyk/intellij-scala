@@ -66,7 +66,7 @@ object CompilationMetadata {
 
     val cachedResults: List[CacheResult] = cacheProviders.map{
       provider =>
-        try provider.loadCache(analysisFromLocalStore.toOption) catch {
+        try provider.loadCache(analysisFromLocalStore.toOption, scalaVersion) catch {
           case NonFatal(e) =>
             loaderErrored(e)
           case e: ClassNotFoundException =>

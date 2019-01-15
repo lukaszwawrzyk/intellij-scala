@@ -27,7 +27,7 @@ class EventGeneratingClient(writeEvent: Event => Unit, canceled: => Boolean) ext
   }
 
   def progress(text: String, done: Option[Float]) {
-    listener(ProgressEvent(text, done))
+    if (text.nonEmpty) listener(ProgressEvent(text, done))
   }
 
   def debug(text: String) {
@@ -37,6 +37,14 @@ class EventGeneratingClient(writeEvent: Event => Unit, canceled: => Boolean) ext
   def generated(source: File, module: File, name: String) {
     listener(GeneratedEvent(source, module, name))
   }
+
+  override def allGenerated(generated: Seq[(File, Seq[(File, String)])]) {
+    listener(AllGeneratedEvent(generated))
+  }
+
+  override def startProcessingOutput(output: File): Unit = listener(StartProcessingOutputEvent(output))
+
+  override def stopProcessingOutput(output: File): Unit = listener(StopProcessingOutputEvent(output))
 
   def deleted(module: File) {
     listener(DeletedEvent(module))

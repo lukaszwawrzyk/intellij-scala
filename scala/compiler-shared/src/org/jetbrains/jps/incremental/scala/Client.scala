@@ -28,7 +28,16 @@ trait Client {
 
   def debug(text: String)
 
+  def startProcessingOutput(output: File)
+
   def generated(source: File, module: File, name: String)
+
+  def allGenerated(generated: Seq[(File, Seq[(File, String)])]) = for {
+    (sourceFile, binaries) <- generated
+    (binaryFile, className) <- binaries
+  } this.generated(sourceFile, binaryFile, className)
+
+  def stopProcessingOutput(output: File)
 
   def processed(source: File)
 

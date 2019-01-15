@@ -24,4 +24,8 @@ class DummyClient extends Client {
   override def trace(exception: Throwable) {}
 
   override def generated(source: File, module: File, name: String) {}
+
+  override def startProcessingOutput(output: File): Unit = {}
+
+  override def stopProcessingOutput(output: File): Unit = {}
 }

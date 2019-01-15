@@ -7,9 +7,11 @@ import java.util.ServiceLoader
 import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.diagnostic.{Logger => JpsLogger}
 import org.jetbrains.jps.ModuleChunk
+import com.intellij.openapi.util.io.FileUtil
 import org.jetbrains.jps.builders.java.JavaBuilderUtil
 import org.jetbrains.jps.incremental._
 import org.jetbrains.jps.incremental.messages.ProgressMessage
+import org.jetbrains.jps.incremental.scala.data.CompilerConfiguration
 import org.jetbrains.jps.incremental.scala.data.{CompilationData, CompilerData, SbtData}
 import org.jetbrains.jps.incremental.scala.data.DataFactoryService
 import org.jetbrains.jps.incremental.scala.data.DefaultDataFactoryService
@@ -29,6 +31,7 @@ object ScalaBuilder {
 
   def compile(context: CompileContext,
               chunk: ModuleChunk,
+              compilerConfig: CompilerConfiguration,
               sources: Seq[File],
               allSources: Seq[File],
               modules: Set[JpsModule],
@@ -40,13 +43,80 @@ object ScalaBuilder {
       sbtData <-  sbtData
       dataFactory = dataFactoryOf(context)
       compilerData <- dataFactory.getCompilerDataFactory.from(context, chunk)
-      compilationData <- dataFactory.getCompilationDataFactory.from(sources, allSources, context,  chunk)
+      compilationData <- dataFactory.getCompilationDataFactory.from(sources, allSources, context, chunk, compilerConfig)
     }
     yield {
       scalaLibraryWarning(modules, compilationData, client)
 
       val server = getServer(context)
       server.compile(sbtData, compilerData, compilationData, client)
+    }
+  }
+
+  def checkIncrementalTypeChange(context: CompileContext): Unit = {
+    def storageFile: Option[File] = {
+      val projectDir = context.getProjectDescriptor.dataManager.getDataPaths.getDataStorageRoot
+      if (projectDir != null)
+        Some(new File(projectDir, "incrementalType.dat"))
+      else None
+    }
+
+    def getPreviousIncrementalType: Option[IncrementalityType] = {
+      storageFile.filter(_.exists).flatMap { file =>
+        val result = using(new DataInputStream(new BufferedInputStream(new FileInputStream(file)))) { in =>
+          try {
+            Some(IncrementalityType.valueOf(in.readUTF()))
+          } catch {
+            case _: IOException | _: IllegalArgumentException | _: NullPointerException => None
+          }
+        }
+        if (result.isEmpty) file.delete()
+        result
+      }
+    }
+
+    def setPreviousIncrementalType(incrType: IncrementalityType) {
+      storageFile.foreach { file =>
+        val parentDir = file.getParentFile
+        if (!parentDir.exists()) parentDir.mkdirs()
+        using(new DataOutputStream(new BufferedOutputStream(new FileOutputStream(file)))) {
+          _.writeUTF(incrType.name)
+        }
+      }
+    }
+
+    def cleanCaches() {
+      context.getProjectDescriptor.setFSCache(FSCache.NO_CACHE)
+      try {
+        val directory = context.getProjectDescriptor.dataManager.getDataPaths.getDataStorageRoot
+        FileUtil.delete(directory)
+      }
+      catch {
+        case e: Exception => throw new IOException("Can not delete project system directory: \n" + e.getMessage)
+      }
+    }
+
+    val settings = projectSettings(context)
+    val previousIncrementalType = getPreviousIncrementalType
+    val incrType = settings.getIncrementalityType
+    previousIncrementalType match {
+      case _ if JavaBuilderUtil.isForcedRecompilationAllJavaModules(context) => //isRebiuld
+        setPreviousIncrementalType(incrType)
+      case None =>
+      //        ScalaBuilderDelegate.Log.info("scala: cannot find type of the previous incremental compiler, full rebuild may be required")
+      case Some(`incrType`) => //same incremental type, nothing to be done
+      case Some(_) if isMakeProject(context) =>
+        if (ScalaBuilder.isScalaProject(context.getProjectDescriptor.getProject)) {
+          cleanCaches()
+          setPreviousIncrementalType(incrType)
+          context.processMessage(new CompilerMessage("scala", BuildMessage.Kind.WARNING,
+            "type of incremental compiler has been changed, full rebuild..."))
+        }
+      case Some(_) =>
+        if (ScalaBuilder.isScalaProject(context.getProjectDescriptor.getProject)) {
+          throw new ProjectBuildException("scala: type of incremental compiler has been changed, full rebuild is required")
+        }
+        server.compile(sbtData, compilerConfig.data, compilationData, client)
     }
   }
 
@@ -61,6 +131,16 @@ object ScalaBuilder {
 
   def hasBuildModules(chunk: ModuleChunk): Boolean = {
     chunk.getModules.asScala.exists(_.getName.endsWith("-build")) // gen-idea doesn't use the sbt module type
+  }
+
+  def isMakeProject(context: CompileContext): Boolean = JavaBuilderUtil.isCompileJavaIncrementally(context) && {
+    for {
+      chunk <- context.getProjectDescriptor.getBuildTargetIndex.getSortedTargetChunks(context).asScala
+      target <- chunk.getTargets.asScala
+    } {
+      if (!context.getScope.isAffected(target)) return false
+    }
+    true
   }
 
   def projectSettings(context: CompileContext): ProjectSettings = SettingsManager.getProjectSettings(context.getProjectDescriptor.getProject)
@@ -95,12 +175,11 @@ object ScalaBuilder {
   }
 
   private def scalaLibraryWarning(modules: Set[JpsModule], compilationData: CompilationData, client: Client) {
-    val hasScalaFacet = modules.exists(SettingsManager.hasScalaSdk)
     val hasScalaLibrary = compilationData.classpath.exists(_.getName.startsWith("scala-library"))
 
     val hasScalaSources = compilationData.sources.exists(_.getName.endsWith(".scala"))
 
-    if (hasScalaFacet && !hasScalaLibrary && hasScalaSources) {
+    if (!hasScalaLibrary && hasScalaSources) {
       val names = modules.map(_.getName).mkString(", ")
       client.warning("No 'scala-library*.jar' in module dependencies [%s]".format(names))
     }
