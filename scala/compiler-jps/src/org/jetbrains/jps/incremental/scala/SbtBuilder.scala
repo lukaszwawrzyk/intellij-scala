@@ -38,7 +38,7 @@ class SbtBuilder extends ModuleLevelBuilder(BuilderCategory.TRANSLATOR) {
 
   override def chunkBuildStarted(context: CompileContext, chunk: ModuleChunk): Unit = {
     if (isScalaProject(context) && !isDisabled(context) && hasScalaModules(chunk)) {
-      LOG.debug("Java builder is disabled by sbtbuilder") {
+      LOG.debug("Java builder is disabled by sbtbuilder")
       JavaBuilder.IS_ENABLED.set(context, false)
       shouldSkipCompilation.set(context, false)
     } else shouldSkipCompilation.set(context, true)

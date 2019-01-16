@@ -5,18 +5,19 @@ import java.net.InetAddress
 import java.util.ServiceLoader
 
 import com.intellij.openapi.application.PathManager
-import com.intellij.openapi.diagnostic.{Logger => JpsLogger}
+import com.intellij.openapi.diagnostic.{ Logger => JpsLogger }
 import org.jetbrains.jps.ModuleChunk
 import org.jetbrains.jps.builders.java.JavaBuilderUtil
 import org.jetbrains.jps.incremental._
-import org.jetbrains.jps.incremental.scala.data.{CompilationData, CompilerData, SbtData}
+import org.jetbrains.jps.incremental.scala.data.{ CompilationData, CompilerData, SbtData }
 import org.jetbrains.jps.incremental.scala.data.DataFactoryService
 import org.jetbrains.jps.incremental.scala.data.DefaultDataFactoryService
-import org.jetbrains.jps.incremental.messages.{BuildMessage, CompilerMessage, ProgressMessage}
+import org.jetbrains.jps.incremental.messages.{ BuildMessage, CompilerMessage, ProgressMessage }
 import org.jetbrains.jps.incremental.scala.data.CompilerConfiguration
 import org.jetbrains.jps.incremental.scala.local.LocalServer
-import org.jetbrains.jps.incremental.scala.model.{GlobalSettings, ProjectSettings}
+import org.jetbrains.jps.incremental.scala.model.{ GlobalSettings, ProjectSettings }
 import org.jetbrains.jps.incremental.scala.remote.RemoteServer
+import org.jetbrains.jps.model.JpsProject
 import org.jetbrains.jps.model.module.JpsModule
 
 import _root_.scala.collection.JavaConverters._
@@ -40,7 +41,7 @@ object ScalaBuilder {
 
     for {
       sbtData <-  sbtData
-      dataFactory = dataFactoryOf(context)
+      dataFactory = DataFactoryService.of(context)
       compilationData <- dataFactory.getCompilationDataFactory.from(sources, allSources, context, chunk, compilerConfig)
     }
     yield {
@@ -54,15 +55,6 @@ object ScalaBuilder {
   // Invokation of these methods can take a long time on large projects (like IDEA's one)
   def isScalaProject(project: JpsProject): Boolean = project.getModules.asScala.exists(SettingsManager.hasScalaSdk)
   def hasScalaModules(chunk: ModuleChunk): Boolean = SettingsManager.hasScalaSdk(chunk.representativeTarget().getModule)
-
-  private def dataFactoryOf(context: CompileContext): DataFactoryService = {
-    val df = ServiceLoader.load(classOf[DataFactoryService])
-    val registeredDataFactories = df.iterator().asScala.toList
-    Log.info(s"Registered factories of ${classOf[DataFactoryService].getName}: $registeredDataFactories")
-    val firstEnabledDataFactory = registeredDataFactories.find(_.isEnabled(context.getProjectDescriptor.getProject))
-    Log.info(s"First enabled factory (if any): $firstEnabledDataFactory")
-    firstEnabledDataFactory.getOrElse(DefaultDataFactoryService)
-  }
 
   def hasBuildModules(chunk: ModuleChunk): Boolean = {
     chunk.getModules.asScala.exists(_.getName.endsWith("-build")) // gen-idea doesn't use the sbt module type

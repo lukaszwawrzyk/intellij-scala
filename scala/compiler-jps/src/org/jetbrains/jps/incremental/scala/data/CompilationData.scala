@@ -21,7 +21,7 @@ case class ZincData(
   compilationStartDate: Long,
   isCompile: Boolean,
   ignoredScalacOptions: Seq[String] = Seq.empty,
-  isToJar: Boolean = false
+  isToJar: Boolean = true
 )
 
 /**

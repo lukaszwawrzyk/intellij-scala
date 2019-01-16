@@ -21,8 +21,6 @@ import org.jetbrains.jps.incremental.{BuilderCategory, _}
 import _root_.scala.collection.JavaConverters._
 import _root_.scala.collection.mutable
 import _root_.scala.collection.mutable.ListBuffer
-import scala.collection.mutable
-import scala.collection.mutable.ListBuffer
 import org.jetbrains.jps.incremental._
 import org.jetbrains.jps.incremental.scala.data.CompilerConfiguration
 

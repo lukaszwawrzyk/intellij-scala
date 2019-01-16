@@ -23,7 +23,7 @@ object CompilerConfiguration {
 
     val order = compilerSettings.getCompileOrder
 
-    CompilerData.from(context, chunk) match {
+    DataFactoryService.of(context).getCompilerDataFactory.from(context, chunk) match {
       case Right(data) => op(CompilerConfiguration(data,
         scalacOps = commonOptions ++ scalaOptionsFor(compilerSettings, chunk),
         javacOpts = commonOptions ++ javaOptionsFor(context, chunk), order)
