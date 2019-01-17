@@ -2,6 +2,7 @@ package org.jetbrains.plugins.scala
 package compiler
 
 import java.io.{File, IOException}
+import java.nio.file.Paths
 
 import com.intellij.compiler.server.BuildManager
 import com.intellij.ide.plugins.{IdeaPluginDescriptor, PluginManager}
@@ -11,11 +12,12 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.projectRoots.{ProjectJdkTable, Sdk}
-import com.intellij.openapi.roots.ModuleRootManager
-import com.intellij.openapi.roots.impl.OrderEntryUtil
+import com.intellij.openapi.roots.{CompilerModuleExtension, ModuleRootManager, ModuleRootModificationUtil, OrderRootType}
+import com.intellij.openapi.roots.impl.{ModuleRootManagerComponent, ModuleRootManagerImpl, OrderEntryUtil}
 import com.intellij.openapi.roots.ui.configuration.ProjectSettingsService
 import com.intellij.openapi.util.ShutDownTracker
 import com.intellij.openapi.util.io.FileUtil
+import com.intellij.testFramework.PsiTestUtil
 import com.intellij.util.PathUtil
 import com.intellij.util.net.NetUtils
 import gnu.trove.TByteArrayList
@@ -81,6 +83,20 @@ object CompileServerLauncher {
   } yield new File(pluginsLibs, filesPath)
 
   private def start(project: Project, jdk: JDK): Either[String, Process] = {
+    project.modulesWithScala.foreach { module =>
+      val rootManager = ModuleRootManager.getInstance(module)
+      val compilerExtension = CompilerModuleExtension.getInstance(module)
+      val jarEntries = compilerExtension.getOutputRootUrls(true).map(_ + ".jar")
+      val existingEntries = rootManager.getOrderEntries.flatMap(x => x.getUrls(OrderRootType.CLASSES)).toSet
+      val toAdd = jarEntries.filterNot(existingEntries.contains)
+      import org.jetbrains.plugins.scala.extensions.inWriteAction
+      inWriteAction {
+        toAdd.foreach { path =>
+          ModuleRootModificationUtil.addModuleLibrary(module, path)
+        }
+      }
+    }
+
     val settings = ScalaCompileServerSettings.getInstance
 
     settings.COMPILE_SERVER_SDK = jdk.name
