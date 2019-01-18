@@ -80,15 +80,13 @@ abstract class BaseCompilationData extends CompilationDataFactory {
 
       val outputGroups = createOutputGroups(chunk)
 
-      val canonicalSources = sources.map(_.getCanonicalFile)
-
       val isCompile =
         !JavaBuilderUtil.isCompileJavaIncrementally(context) &&
           !JavaBuilderUtil.isForcedRecompilationAllJavaModules(context)
 
       val additionalOptions = extraOptions(target, context, module, outputGroups)
 
-      CompilationData(canonicalSources, classpath, output, commonOptions ++ scalaOptions ++ additionalOptions, commonOptions ++ javaOptions,
+      CompilationData(sources, classpath, output, commonOptions ++ scalaOptions ++ additionalOptions, commonOptions ++ javaOptions,
         order, cacheFile, relevantOutputToCacheMap, outputGroups,
         ZincData(allSources, compilationStamp, isCompile))
     }
