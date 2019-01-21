@@ -17,7 +17,7 @@ import org.jetbrains.plugins.scala.statistics.{FeatureKey, Stats}
 class ScalaCompilerConfigurable(project: Project, configuration: ScalaCompilerConfiguration) extends AbstractConfigurable("Scala Compiler") with Composite {
 
   private val form = new ScalaCompilerConfigurationPanel(project)
-  
+
   private val profiles = form.getProfilesPanel
 
   override def createComponent(): JPanel = form.getContentPanel
@@ -42,7 +42,7 @@ class ScalaCompilerConfigurable(project: Project, configuration: ScalaCompilerCo
     }
     val newCompileToJar = form.isCompileToJar
     if (newCompileToJar != configuration.compileToJar) {
-      CompileToJarComponent.getInstance().adjustClasspath(project, newCompileToJar)
+      CompileToJarComponent.getInstance(project).adjustClasspath(newCompileToJar)
     }
 
     configuration.incrementalityType = newIncType

@@ -2,66 +2,98 @@ package org.jetbrains.plugins.scala.project
 
 import java.util.Collections
 
+import com.intellij.ProjectTopics
+import com.intellij.openapi.components.ProjectComponent
 import com.intellij.openapi.module.Module
-import com.intellij.openapi.project.Project
+import com.intellij.openapi.project.{ ModuleListener, Project }
 import com.intellij.openapi.roots._
+import org.jetbrains.plugins.scala.project.settings.ScalaCompilerConfiguration
 import org.jetbrains.plugins.scala.extensions.inWriteAction
 
-// todo - on output changed
-//  on module addded
 object CompileToJarComponent {
   private val ProductionOutputJarLibName = "compile-to-jar-output"
   private val TestOutputJarLibName = "compile-to-jar-output-test"
   private val LibraryNames = Set(ProductionOutputJarLibName, TestOutputJarLibName)
 
-  def getInstance(): CompileToJarComponent.type = this
+  def getInstance(project: Project): CompileToJarComponent = {
+    project.getComponent(classOf[CompileToJarComponent])
+  }
 
-  def adjustClasspath(project: Project, compileToJar: Boolean): Unit = {
-    if (compileToJar) {
-      addOutputJarsAsDependencies(project)
-    } else {
-      removeOutputJarDependencies(project)
+}
+
+class CompileToJarComponent(project: Project) extends ProjectComponent {
+  import CompileToJarComponent._
+
+  private val connection = project.getMessageBus.connect()
+
+  override def projectOpened(): Unit = {
+    registerHookToUpdateNewModules()
+    configureModulesOnStartup()
+  }
+
+  private def configureModulesOnStartup(): Unit = {
+    if (compileToJar && notConfigured) {
+      addOutputJarsAsDependencies()
     }
   }
 
-  private def addOutputJarsAsDependencies(project: Project): Unit = {
-    project.modulesWithScala.foreach { module =>
-      val orderEntries = getOrderEntries(module)
-      val currentUrls: Set[String] = orderEntries.flatMap(x => x.getUrls(OrderRootType.CLASSES))(collection.breakOut)
+  private def registerHookToUpdateNewModules(): Unit = {
+    connection.subscribe(ProjectTopics.MODULES, new ModuleListener {
+      override def moduleAdded(project: Project, module: Module): Unit = {
+        if (module.hasScala && compileToJar) {
+          addOutputJarsAsDependencies(module)
+        }
+      }
+    })
+  }
 
-      def toMissingJar(url: String): Option[String] = Option(url).map(_ + ".jar").filterNot(currentUrls.contains)
+  private def notConfigured: Boolean = {
+    project.anyScalaModule.exists { module =>
+      val libraryNames = module.module.libraries.map(_.getName)
+      !LibraryNames.forall(libraryNames.contains)
+    }
+  }
 
-      val compilerExtension = CompilerModuleExtension.getInstance(module)
-      val missingProductionJar = toMissingJar(compilerExtension.getCompilerOutputUrl)
-      val missingTestsJar = toMissingJar(compilerExtension.getCompilerOutputUrlForTests)
+  override def projectClosed() {
+    connection.disconnect()
+  }
 
-      inWriteAction {
-        missingProductionJar.foreach(url => setModuleLibrary(module, ProductionOutputJarLibName, url, DependencyScope.COMPILE, orderEntries))
-        missingTestsJar.foreach(url => setModuleLibrary(module, TestOutputJarLibName, url, DependencyScope.TEST, orderEntries))
+  private def compileToJar: Boolean = ScalaCompilerConfiguration.instanceIn(project).compileToJar
+
+  def adjustClasspath(compileToJar: Boolean): Unit = {
+    if (compileToJar) {
+      addOutputJarsAsDependencies()
+    } else {
+      removeOutputJarDependencies()
+    }
+  }
+
+  private def addOutputJarsAsDependencies(): Unit = {
+    project.modulesWithScala.foreach(addOutputJarsAsDependencies)
+  }
+
+  private def addOutputJarsAsDependencies(module: Module): Unit = {
+    val currentEntries: Set[String] = {
+      val orderEntries = ModuleRootManager.getInstance(module).getOrderEntries
+      orderEntries.map(_.getPresentableName)(collection.breakOut)
+    }
+
+    def addMissingClasspathEntry(name: String, url: String, scope: DependencyScope): Unit = {
+      if (!currentEntries.contains(name)) {
+        val missingJar = Option(url).map(_ + ".jar")
+        missingJar.foreach(url => addModuleLibrary(module, name, url, scope))
       }
     }
+
+    val compilerExtension = CompilerModuleExtension.getInstance(module)
+    addMissingClasspathEntry(ProductionOutputJarLibName, compilerExtension.getCompilerOutputUrl, DependencyScope.COMPILE)
+    addMissingClasspathEntry(TestOutputJarLibName, compilerExtension.getCompilerOutputUrlForTests, DependencyScope.TEST)
   }
 
-  private def removeOutputJarDependencies(project: Project): Unit = {
+  private def removeOutputJarDependencies(): Unit = {
     project.modulesWithScala.foreach { module =>
-      inWriteAction(removeOrderEntries(module, entry => LibraryNames.contains(entry.getPresentableName)))
+      removeOrderEntries(module, entry => LibraryNames.contains(entry.getPresentableName))
     }
-  }
-
-  private def setModuleLibrary(module: Module, name: String, url: String, scope: DependencyScope, orderEntries: Seq[OrderEntry]): Unit = {
-    removeModuleLibrary(module: Module, name: String, orderEntries)
-    addModuleLibrary(module, name, url, scope)
-  }
-
-  private def removeModuleLibrary(module: Module, name: String, orderEntries: Seq[OrderEntry]): Unit = {
-    removeOrderEntries(module, _.getPresentableName == name)
-  }
-
-  private def removeOrderEntries(module: Module, shouldRemove: OrderEntry => Boolean): Unit = {
-    ModuleRootModificationUtil.updateModel(module, { model =>
-      val toRemove = model.getOrderEntries.filter(shouldRemove)
-      toRemove.foreach(model.removeOrderEntry)
-    })
   }
 
   private def addModuleLibrary(module: Module, name: String, url: String, scope: DependencyScope): Unit = {
@@ -69,10 +101,18 @@ object CompileToJarComponent {
     val sources = Collections.emptyList[String]
     val excludedRoots = Collections.emptyList[String]
     val exported = true
-    ModuleRootModificationUtil.addModuleLibrary(module, name, classes, sources, excludedRoots, scope, exported)
+    inWriteAction {
+      ModuleRootModificationUtil.addModuleLibrary(module, name, classes, sources, excludedRoots, scope, exported)
+    }
   }
 
-  private def getOrderEntries(module: Module): Array[OrderEntry] = {
-    ModuleRootManager.getInstance(module).getOrderEntries
+  private def removeOrderEntries(module: Module, shouldRemove: OrderEntry => Boolean): Unit = {
+    inWriteAction {
+      ModuleRootModificationUtil.updateModel(module, { model =>
+        val toRemove = model.getOrderEntries.filter(shouldRemove)
+        toRemove.foreach(model.removeOrderEntry)
+      })
+    }
   }
+
 }
