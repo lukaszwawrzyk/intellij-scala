@@ -40,8 +40,13 @@ class ScalaCompilerConfigurable(project: Project, configuration: ScalaCompilerCo
     if (newIncType != configuration.incrementalityType) {
       Stats.trigger(FeatureKey.incrementalTypeSet(newIncType.name()))
     }
+    val newCompileToJar = form.isCompileToJar
+    if (newCompileToJar != configuration.compileToJar) {
+      CompileToJarComponent.getInstance().adjustClasspath(project, newCompileToJar)
+    }
+
     configuration.incrementalityType = newIncType
-    configuration.compileToJar = form.isCompileToJar
+    configuration.compileToJar = newCompileToJar
     configuration.defaultProfile = profiles.getDefaultProfile
     configuration.customProfiles = profiles.getModuleProfiles.asScala
     DaemonCodeAnalyzer.getInstance(project).restart()
