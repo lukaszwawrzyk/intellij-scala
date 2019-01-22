@@ -20,7 +20,8 @@ case class ZincData(
   allSources: Seq[File],
   compilationStartDate: Long,
   isCompile: Boolean,
-  isToJar: Boolean
+  isToJar: Boolean,
+  ignoredScalacOptions: Seq[String]
 )
 
 /**
@@ -96,7 +97,7 @@ abstract class BaseCompilationData extends CompilationDataFactory {
 
       CompilationData(sources, classpath, output, commonOptions ++ scalaOptions ++ additionalOptions, commonOptions ++ javaOptions,
         order, cacheFile, relevantOutputToCacheMap, outputGroups,
-        ZincData(allSources, compilationStamp, isCompile, isToJar))
+        ZincData(allSources, compilationStamp, isCompile, isToJar, Seq.empty)) // TODO FILL ME
     }
   }
 
