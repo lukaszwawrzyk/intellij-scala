@@ -66,14 +66,14 @@ class SbtCompiler(javaTools: JavaTools, optScalac: Option[ScalaCompiler], fileTo
       Array.empty)
     val previousResult = PreviousResult.create(Optional.of(previousAnalysis), previousSetup.toOptional)
 
-    val finalOutput = if (compilationData.zincData.isToJar) {
-      new File(compilationData.output.getParentFile, compilationData.output.getName + ".jar")
-    } else compilationData.output
+    if (compilationData.output.getName.endsWith(".jar") && compilationData.output.isDirectory) {
+      compilationData.output.delete()
+    }
 
     val inputs = incrementalCompiler.inputs(
       compilationData.classpath.toArray,
       compilationData.zincData.allSources.toArray,
-      finalOutput,
+      compilationData.output,
       compilationData.scalaOptions.toArray,
       compilationData.javaOptions.toArray,
       100,

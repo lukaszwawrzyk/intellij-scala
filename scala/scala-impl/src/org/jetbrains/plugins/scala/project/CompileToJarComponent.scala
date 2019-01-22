@@ -11,13 +11,37 @@ import org.jetbrains.plugins.scala.project.settings.ScalaCompilerConfiguration
 import org.jetbrains.plugins.scala.extensions.inWriteAction
 
 object CompileToJarComponent {
-  private val ProductionOutputJarLibName = "compile-to-jar-output"
-  private val TestOutputJarLibName = "compile-to-jar-output-test"
-  private val LibraryNames = Set(ProductionOutputJarLibName, TestOutputJarLibName)
+  private val ProductionResourcesLibName = "compile-to-jar-resources"
+  private val TestResourcesLibName = "compile-to-jar-resources-test"
+  private val ResourceLibNames = Set(ProductionResourcesLibName, TestResourcesLibName)
 
   def getInstance(project: Project): CompileToJarComponent = {
     project.getComponent(classOf[CompileToJarComponent])
   }
+
+  private class CompilerOutput(
+    module: Module,
+    getter: CompilerModuleExtension => String,
+    setter: (CompilerModuleExtension, String) => Unit,
+  ) {
+    private val modifiableModel = ModuleRootManager.getInstance(module).getModifiableModel
+    private val compilerExtension = modifiableModel.getModuleExtension(classOf[CompilerModuleExtension])
+
+    def get: Option[String] = {
+      Option(getter(compilerExtension))
+    }
+
+    def set(output: String): Unit = {
+      compilerExtension.inheritCompilerOutputPath(false)
+      setter(compilerExtension, output)
+      inWriteAction { modifiableModel.commit() }
+    }
+  }
+
+  private class ProductionOutput(module: Module)
+    extends CompilerOutput(module, _.getCompilerOutputUrl, _ setCompilerOutputPath _)
+  private class TestOutput(module: Module)
+    extends CompilerOutput(module, _.getCompilerOutputUrlForTests, _ setCompilerOutputPathForTests _)
 
 }
 
@@ -33,7 +57,7 @@ class CompileToJarComponent(project: Project) extends ProjectComponent {
 
   private def configureModulesOnStartup(): Unit = {
     if (compileToJar && notConfigured) {
-      addOutputJarsAsDependencies()
+      setupCompileToJarOutputs()
     }
   }
 
@@ -41,7 +65,7 @@ class CompileToJarComponent(project: Project) extends ProjectComponent {
     connection.subscribe(ProjectTopics.MODULES, new ModuleListener {
       override def moduleAdded(project: Project, module: Module): Unit = {
         if (module.hasScala && compileToJar) {
-          addOutputJarsAsDependencies(module)
+          setupCompileToJarOutputs(module)
         }
       }
     })
@@ -50,7 +74,7 @@ class CompileToJarComponent(project: Project) extends ProjectComponent {
   private def notConfigured: Boolean = {
     project.anyScalaModule.exists { module =>
       val libraryNames = module.module.libraries.map(_.getName)
-      !LibraryNames.forall(libraryNames.contains)
+      !ResourceLibNames.forall(libraryNames.contains)
     }
   }
 
@@ -62,37 +86,52 @@ class CompileToJarComponent(project: Project) extends ProjectComponent {
 
   def adjustClasspath(compileToJar: Boolean): Unit = {
     if (compileToJar) {
-      addOutputJarsAsDependencies()
+      setupCompileToJarOutputs()
     } else {
-      removeOutputJarDependencies()
+      setupRegularOutputs()
     }
   }
 
-  private def addOutputJarsAsDependencies(): Unit = {
-    project.modulesWithScala.foreach(addOutputJarsAsDependencies)
+  private def setupCompileToJarOutputs(): Unit = {
+    project.modulesWithScala.foreach(setupCompileToJarOutputs)
   }
 
-  private def addOutputJarsAsDependencies(module: Module): Unit = {
+  private def setupCompileToJarOutputs(module: Module): Unit = {
     val currentEntries: Set[String] = {
       val orderEntries = ModuleRootManager.getInstance(module).getOrderEntries
       orderEntries.map(_.getPresentableName)(collection.breakOut)
     }
 
-    def addMissingClasspathEntry(name: String, url: String, scope: DependencyScope): Unit = {
-      if (!currentEntries.contains(name)) {
-        val missingJar = Option(url).map(_ + ".jar")
-        missingJar.foreach(url => addModuleLibrary(module, name, url, scope))
+    def configureClasspath(name: String, compilerOutput: CompilerOutput, scope: DependencyScope): Unit = {
+      compilerOutput.get.foreach { url =>
+        if (!url.endsWith(".jar")) {
+          val jarOutput = "jar:" + url.stripPrefix("file:") + ".jar"
+          val resourcesDir = url
+          compilerOutput.set(jarOutput)
+          if (!currentEntries.contains(name)) {
+            addModuleLibrary(module, name, resourcesDir, scope)
+          }
+        }
       }
     }
 
-    val compilerExtension = CompilerModuleExtension.getInstance(module)
-    addMissingClasspathEntry(ProductionOutputJarLibName, compilerExtension.getCompilerOutputUrl, DependencyScope.COMPILE)
-    addMissingClasspathEntry(TestOutputJarLibName, compilerExtension.getCompilerOutputUrlForTests, DependencyScope.TEST)
+    configureClasspath(ProductionResourcesLibName, new ProductionOutput(module), DependencyScope.COMPILE)
+    configureClasspath(TestResourcesLibName, new TestOutput(module), DependencyScope.TEST)
   }
 
-  private def removeOutputJarDependencies(): Unit = {
+  private def setupRegularOutputs(): Unit = {
     project.modulesWithScala.foreach { module =>
-      removeOrderEntries(module, entry => LibraryNames.contains(entry.getPresentableName))
+      def configureOutput(compilerOutput: CompilerOutput): Unit = {
+        compilerOutput.get.foreach { output =>
+          if (output.endsWith(".jar")) {
+            compilerOutput.set(output.stripSuffix(".jar").stripPrefix("jar:"))
+          }
+        }
+      }
+
+      configureOutput(new ProductionOutput(module))
+      configureOutput(new TestOutput(module))
+      removeOrderEntries(module, entry => ResourceLibNames.contains(entry.getPresentableName))
     }
   }
 
