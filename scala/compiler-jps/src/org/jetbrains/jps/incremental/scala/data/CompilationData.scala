@@ -93,11 +93,13 @@ abstract class BaseCompilationData extends CompilationDataFactory {
 
       val additionalOptions = extraOptions(target, context, module, outputGroups)
 
-      val isToJar = SettingsManager.getProjectSettings(context.getProjectDescriptor.getProject).isCompileToJar
+      val zincProjectSettings = SettingsManager.getZincProjectSettings(context.getProjectDescriptor.getProject)
+      val isToJar = zincProjectSettings.isCompileToJar
+      val ignoredScalacOptions = if (zincProjectSettings.isIgnoringScalacOptions) zincProjectSettings.getIgnoredScalacOptions.toSeq else Seq.empty
 
       CompilationData(sources, classpath, output, commonOptions ++ scalaOptions ++ additionalOptions, commonOptions ++ javaOptions,
         order, cacheFile, relevantOutputToCacheMap, outputGroups,
-        ZincData(allSources, compilationStamp, isCompile, isToJar, Seq.empty)) // TODO FILL ME
+        ZincData(allSources, compilationStamp, isCompile, isToJar, ignoredScalacOptions))
     }
   }
 
