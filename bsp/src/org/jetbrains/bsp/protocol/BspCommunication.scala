@@ -86,7 +86,9 @@ class BspCommunication(base: File, executionSettings: BspExecutionSettings) exte
         settings <- bspSettings(project)
         if settings.isUseAutoImport
       } {
-        FileDocumentManager.getInstance.saveAllDocuments()
+        org.jetbrains.plugins.scala.extensions.invokeAndWait {
+          FileDocumentManager.getInstance.saveAllDocuments()
+        }
         ExternalSystemUtil.refreshProjects(new ImportSpecBuilder(project, BSP.ProjectSystemId))
       }
     case _ => // ignore
