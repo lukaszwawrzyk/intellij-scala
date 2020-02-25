@@ -3,19 +3,28 @@ package org.jetbrains.bsp.protocol
 import java.io.File
 import java.net.URI
 import java.nio.file._
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 
+import com.intellij.ProjectTopics
+import com.intellij.openapi.module.Module
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.ServiceManager
-import com.intellij.openapi.project.{Project, ProjectManager, ProjectManagerListener, ProjectUtil}
+import com.intellij.openapi.externalSystem.util.ExternalSystemApiUtil
+import com.intellij.openapi.project.ModuleListener
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.project.ProjectManager
+import com.intellij.openapi.project.ProjectManagerListener
+import com.intellij.openapi.project.ProjectUtil
 import com.intellij.openapi.util.Disposer
 import com.intellij.util.concurrency.AppExecutorUtil
 import org.jetbrains.bsp.settings.BspExecutionSettings
 
 import scala.collection.mutable
 import scala.concurrent.duration._
-import scala.util.{Success, Try}
+import scala.util.Success
+import scala.util.Try
 
 class BspCommunicationService extends Disposable {
 
@@ -82,13 +91,33 @@ class BspCommunicationService extends Disposable {
   }
 
   private object MyProjectListener extends ProjectManagerListener {
+    /*override def projectOpened(project: Project): Unit = {
+      val conn = project.getMessageBus.connect()
+      conn.subscribe(ProjectTopics.MODULES, new ModuleListener {
+        var initialized = false
 
+        override def moduleAdded(project: Project, module: Module): Unit = {
+          if (!initialized)
+            synchronized {
+              if (!initialized) {
+                initialized = true
+                val path = new File(ExternalSystemApiUtil.getExternalProjectPath(module))
+                communicate(path).run((_, _) => CompletableFuture.completedFuture(()), _ => (), _ => ())
+                conn.disconnect()
+              }
+            }
+        }
+      }
+      )
+    }
+*/
     override def projectClosed(project: Project): Unit = for {
       path <- projectPath(project)
       uri = Paths.get(path).toUri
       session <- comms.get(uri)
     } session.closeSession()
   }
+
 }
 
 object BspCommunicationService {

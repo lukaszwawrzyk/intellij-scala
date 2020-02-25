@@ -83,7 +83,7 @@ class BspTask[T](project: Project,
       val targetsToClean = targetToCleanByWorkspace.getOrElse(workspace, List.empty)
       val communication: BspCommunication = BspCommunication.forWorkspace(workspace.toFile)
       communication.run(
-        buildRequests(targets, targetsToClean)(_,_),
+        buildRequests(targets, targetsToClean)(_, _),
         BuildMessages.empty,
         notifications(report),
         processLog(report))
@@ -95,14 +95,14 @@ class BspTask[T](project: Project,
         val updatedMessages = compileResults.map(r => messagesWithStatus(report, reportIndicator, r._1, r._2))
         updatedMessages.fold(BuildMessages.empty) { (m1, m2) => m1.combine(m2) }
       }.recover {
-        case _: ProcessCanceledException =>
-          BuildMessages.empty.status(BuildMessages.Canceled)
-        case NonFatal(x: Exception) =>
-          BuildMessages.empty
-            .status(BuildMessages.Error)
-            .exception(x)
-      }
-      .getOrElse{
+      case _: ProcessCanceledException =>
+        BuildMessages.empty.status(BuildMessages.Canceled)
+      case NonFatal(x: Exception) =>
+        BuildMessages.empty
+          .status(BuildMessages.Error)
+          .exception(x)
+    }
+      .getOrElse {
         BuildMessages.empty
           .status(BuildMessages.Error)
           .addError(s"Build failed: unknown reason")
@@ -130,9 +130,9 @@ class BspTask[T](project: Project,
   }
 
   private def messagesWithStatus(report: BuildToolWindowReporter,
-                               reportIndicator: IndicatorReporter,
-                               result: CompileResult,
-                               messages: BuildMessages): BuildMessages = {
+                                 reportIndicator: IndicatorReporter,
+                                 result: CompileResult,
+                                 messages: BuildMessages): BuildMessages = {
     try {
       result.getStatusCode match {
         case StatusCode.OK =>
@@ -175,8 +175,8 @@ class BspTask[T](project: Project,
       val res = Await.result(job.future, 300.millis)
       Try(res)
     } catch {
-      case _ : TimeoutException => waitForJobCancelable(job, indicator)
-      case cancel : ProcessCanceledException =>
+      case _: TimeoutException => waitForJobCancelable(job, indicator)
+      case cancel: ProcessCanceledException =>
         job.cancel()
         Failure(cancel)
     }
@@ -186,19 +186,19 @@ class BspTask[T](project: Project,
     if (targetsToClean.isEmpty) compileRequest(targets)
     else {
       cleanRequest(targetsToClean)
-      .exceptionally { err =>
-        new CleanCacheResult(s"server does not support cleaning build cache (${err.getMessage})", false)
-      }
-      .thenCompose { cleaned =>
-        if (cleaned.getCleaned) compileRequest(targets)
-        else {
-          report.error("targets not cleaned, rebuild cancelled: " + cleaned.getMessage, None)
-          val res = new CompileResult(StatusCode.CANCELLED)
-          val future = new CompletableFuture[CompileResult]()
-          future.complete(res)
-          future
+        .exceptionally { err =>
+          new CleanCacheResult(s"server does not support cleaning build cache (${err.getMessage})", false)
         }
-      }
+        .thenCompose { cleaned =>
+          if (cleaned.getCleaned) compileRequest(targets)
+          else {
+            report.error("targets not cleaned, rebuild cancelled: " + cleaned.getMessage, None)
+            val res = new CompileResult(StatusCode.CANCELLED)
+            val future = new CompletableFuture[CompileResult]()
+            future.complete(res)
+            future
+          }
+        }
     }
   }
 
@@ -256,31 +256,31 @@ class BspTask[T](project: Project,
       .filterNot(previousDiagnostics.contains)
       .foldLeft(buildMessages) { (messages, diagnostic) =>
 
-      val start = diagnostic.getRange.getStart
-      val end = diagnostic.getRange.getEnd
-      val position = Some(new FilePosition(uri.toFile, start.getLine, start.getCharacter, end.getLine, end.getCharacter))
-      val text = s"${diagnostic.getMessage} [${start.getLine + 1}:${start.getCharacter + 1}]"
+        val start = diagnostic.getRange.getStart
+        val end = diagnostic.getRange.getEnd
+        val position = Some(new FilePosition(uri.toFile, start.getLine, start.getCharacter, end.getLine, end.getCharacter))
+        val text = s"${diagnostic.getMessage} [${start.getLine + 1}:${start.getCharacter + 1}]"
 
-      import bsp4j.DiagnosticSeverity._
-      Option(diagnostic.getSeverity).map {
-        case ERROR =>
-          report.error(text, position)
-          messages.addError(text)
-        case WARNING =>
-          report.warning(text, position)
-          messages.addWarning(text)
-        case INFORMATION =>
-          report.info(text, position)
-          messages
-        case HINT =>
-          report.info(text, position)
-          messages
-      }
-        .getOrElse {
-          report.info(text, position)
-          messages
+        import bsp4j.DiagnosticSeverity._
+        Option(diagnostic.getSeverity).map {
+          case ERROR =>
+            report.error(text, position)
+            messages.addError(text)
+          case WARNING =>
+            report.warning(text, position)
+            messages.addWarning(text)
+          case INFORMATION =>
+            report.info(text, position)
+            messages
+          case HINT =>
+            report.info(text, position)
+            messages
         }
-    }
+          .getOrElse {
+            report.info(text, position)
+            messages
+          }
+      }
   }
 
   private def reportTaskStart(params: TaskStartParams): Unit = {
@@ -318,6 +318,7 @@ class BspTask[T](project: Project,
 }
 
 object BspTask {
+
   private class TextCollector extends ColoredTextAcceptor {
     private val builder = StringBuilder.newBuilder
 
@@ -328,4 +329,5 @@ object BspTask {
   }
 
   case class BspTarget(workspace: URI, target: URI)
+
 }

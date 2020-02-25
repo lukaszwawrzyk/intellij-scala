@@ -1,30 +1,47 @@
 package org.jetbrains.bsp.protocol.session
 
 import java.io._
-import java.nio.file.{Files, Paths}
+import java.nio.file.Files
+import java.nio.file.Paths
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
-import java.util.concurrent.{Callable, CompletableFuture, LinkedBlockingQueue, TimeUnit}
+import java.util.concurrent.Callable
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 
 import ch.epfl.scala.bsp4j
 import ch.epfl.scala.bsp4j.BuildServerCapabilities
+import ch.epfl.scala.bsp4j.StatusCode
+import com.intellij.build.events.impl.FailureResultImpl
+import com.intellij.build.events.impl.SkippedResultImpl
+import com.intellij.build.events.impl.SuccessResultImpl
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.project.ProjectManager
 import com.intellij.util.concurrency.AppExecutorUtil
-import org.eclipse.lsp4j.jsonrpc.{Launcher, ResponseErrorException}
+import org.eclipse.lsp4j.jsonrpc.Launcher
+import org.eclipse.lsp4j.jsonrpc.ResponseErrorException
 import org.jetbrains.bsp._
 import org.jetbrains.bsp.protocol.BspNotifications._
 import org.jetbrains.bsp.protocol.session.BspSession._
 import org.jetbrains.bsp.protocol.session.jobs.BspSessionJob
-import org.jetbrains.bsp.protocol.{BspCommunication, BspJob}
+import org.jetbrains.bsp.protocol.BspCommunication
+import org.jetbrains.bsp.protocol.BspJob
+import org.jetbrains.plugins.scala.build.BuildMessages
+import org.jetbrains.plugins.scala.build.BuildMessages.EventId
+import org.jetbrains.plugins.scala.build.BuildToolWindowReporter
 
 import scala.annotation.tailrec
+import scala.collection.JavaConverters._
 import scala.concurrent._
 import scala.concurrent.duration._
 import scala.io.Source
 import scala.util.control.NonFatal
-import scala.util.{Failure, Success, Try}
+import scala.util.Failure
+import scala.util.Success
+import scala.util.Try
 
 class BspSession private(bspIn: InputStream,
                          bspErr: InputStream,
@@ -41,6 +58,84 @@ class BspSession private(bspIn: InputStream,
   private val jobs = new LinkedBlockingQueue[BspSessionJob[_,_]]
 
   private var currentJob: BspSessionJob[_,_] = initialJob
+
+  private val indicatorJob: BspSessionJob[_, _] =
+    new BspSessionJob[Unit, Unit] {
+      private val bspTaskId: EventId = BuildMessages.randomEventId
+      // todo figure out the correct project
+      private var running = false
+
+      private val report =
+        new BuildToolWindowReporter(
+          ProjectManager.getInstance.getOpenProjects.head,
+          bspTaskId,
+          "bsp background sync"
+        )
+
+
+      override private[session] def run(bspServer: BspServer, capabilities: BuildServerCapabilities) = {
+        CompletableFuture.completedFuture(((), ()))
+      }
+      override private[session] def cancelWithError(error: BspError): Unit = ()
+      override def future: Future[(Unit, Unit)] = Future.successful(((), ()))
+      override def cancel(): Unit = ()
+
+      override private[protocol] def log(message: String): Unit = {
+        report.log(message)
+      }
+
+      override private[session] def notification(bspNotification: BspNotification): Unit = bspNotification match {
+        case LogMessage(params) =>
+          report.log(params.getMessage)
+        case ShowMessage(params) =>
+          report.log(params.getMessage)
+        case PublishDiagnostics(params) =>
+        case TaskStart(params) =>
+          val taskId = params.getTaskId
+          val id = EventId(taskId.getId)
+          val parent = Option(taskId.getParents)
+            .flatMap(_.asScala.headOption)
+            .map(EventId)
+            .orElse(Option(bspTaskId))
+          val time = Option(params.getEventTime).map(_.longValue())
+            .getOrElse(System.currentTimeMillis())
+          if (!running) report.start()
+          report.startTask(id, parent, params.getMessage, time)
+        case TaskProgress(params) =>
+          val taskId = params.getTaskId
+          val id = EventId(taskId.getId)
+          val time = Option(params.getEventTime.longValue())
+            .getOrElse(System.currentTimeMillis())
+          report.progressTask(
+            id,
+            params.getTotal,
+            params.getProgress,
+            params.getUnit,
+            params.getMessage,
+            time
+          )
+        case TaskFinish(params) =>
+          val taskId = params.getTaskId
+          val id = EventId(taskId.getId)
+          val time = Option(params.getEventTime).map(_.longValue())
+            .getOrElse(System.currentTimeMillis())
+          val result = params.getStatus match {
+            case StatusCode.OK =>
+              new SuccessResultImpl()
+            case StatusCode.CANCELLED =>
+              new SkippedResultImpl
+            case StatusCode.ERROR =>
+              new FailureResultImpl(params.getMessage, null)
+            case otherCode =>
+              new FailureResultImpl(s"unknown status code $otherCode", null)
+          }
+
+          running = false
+          report.finishTask(id, params.getMessage, result, time)
+          report.finish(new BuildMessages(Nil, Nil, Nil, BuildMessages.OK))
+        case DidChangeBuildTarget(_) =>
+      }
+    }
 
   private var lastProcessOutput: Long = System.currentTimeMillis()
   private var lastActivity: Long = lastProcessOutput
@@ -86,6 +181,7 @@ class BspSession private(bspIn: InputStream,
 
       Await.result(currentIgnoringErrors, queueTimeout) // will throw on job error
 
+      currentJob = indicatorJob
       val next = jobs.poll(queueTimeout.toMillis, TimeUnit.MILLISECONDS)
       if (next != null) {
         currentJob = next

@@ -12,6 +12,7 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.externalSystem.importing.ImportSpecBuilder
 import com.intellij.openapi.externalSystem.util.ExternalSystemUtil
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.project.{Project, ProjectUtil}
 import com.intellij.openapi.roots.CompilerProjectExtension
 import com.intellij.openapi.util.SystemInfo
